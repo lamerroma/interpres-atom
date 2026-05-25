@@ -252,6 +252,13 @@ HTML = r"""<!DOCTYPE html>
 </style>
 </head>
 <body>
+<div style="background:#fef9c3; border:1px solid #fde047; border-radius:8px; padding:14px 20px; margin-bottom:20px; display:flex; align-items:center; gap:12px;">
+  <span style="font-size:1.4rem;">🧪</span>
+  <div>
+    <strong style="color:#854d0e;">Тестовий режим</strong>
+    <span style="color:#713f12; font-size:.9rem;"> — сервіс працює в режимі тестування. Обробка одного запиту може займати до <strong>5 хвилин</strong>. Дякуємо за терпіння!</span>
+  </div>
+</div>
 <h1>LocalAI Перекладач</h1>
 
 <!-- Language selectors + Advanced (shared) -->
