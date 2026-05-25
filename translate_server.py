@@ -363,6 +363,13 @@ HTML = r"""<!DOCTYPE html>
   <textarea id="result" rows="6" readonly placeholder="Результат з'явиться тут..."></textarea>
 </div>
 
+<div class="card" id="thinking-card" style="display:none;">
+  <details id="thinking-details">
+    <summary style="font-size:.85rem; color:#7c3aed; cursor:pointer; user-select:none;">&#129504; Думки моделі</summary>
+    <div id="thinking" style="background:#faf5ff; border:1px solid #e9d5ff; border-radius:6px; padding:10px; margin-top:8px; font-family:monospace; font-size:.78rem; color:#4c1d95; white-space:pre-wrap; word-break:break-word; max-height:300px; overflow-y:auto;"></div>
+  </details>
+</div>
+
 <div class="card">
   <label style="margin-bottom:8px">Лог</label>
   <div id="log" class="log-box"></div>
@@ -516,6 +523,8 @@ async function doTranslate() {
   log.textContent = '';
   result.value = '';
   status.textContent = 'Перекладаю...';
+  document.getElementById('thinking').textContent = '';
+  document.getElementById('thinking-card').style.display = 'none';
 
   const startTime = Date.now();
   _controller = new AbortController();
@@ -548,6 +557,15 @@ async function doTranslate() {
         if (!line.startsWith('data: ')) continue;
         let evt; try { evt = JSON.parse(line.slice(6)); } catch { continue; }
         if (evt.type === 'id') { _requestId = evt.text; }
+        else if (evt.type === 'thinking') {
+          const thinkingCard = document.getElementById('thinking-card');
+          const thinkingBox = document.getElementById('thinking');
+          const details = document.getElementById('thinking-details');
+          thinkingCard.style.display = 'block';
+          details.open = true;
+          thinkingBox.textContent += evt.text;
+          thinkingBox.scrollTop = thinkingBox.scrollHeight;
+        }
         else if (evt.type === 'queue') {
           const banner = document.getElementById('queue-banner');
           const bannerText = document.getElementById('queue-banner-text');
@@ -825,7 +843,7 @@ def translate(req: TranslateRequest):
                 resp = req_lib.post(
                     f"{CFG['base_url']}/chat/completions",
                     headers={"Authorization": "Bearer dummy", "Content-Type": "application/json"},
-                    json={"model": CFG["model"], "stream": True, "max_tokens": CFG["max_tokens"], "messages": messages},
+                    json={"model": CFG["model"], "stream": True, "max_tokens": CFG["max_tokens"], "messages": messages, "think": True},
                     timeout=CFG["llm_timeout"],
                     stream=True,
                 )
@@ -855,7 +873,10 @@ def translate(req: TranslateRequest):
                         yield f"data: {json.dumps({'type': 'error', 'text': str(chunk['error'])})}\n\n"
                         return
                     delta = chunk.get("choices", [{}])[0].get("delta", {})
+                    thinking_token = delta.get("thinking", "")
                     token = delta.get("content", "")
+                    if thinking_token:
+                        yield f"data: {json.dumps({'type': 'thinking', 'text': thinking_token})}\n\n"
                     if token:
                         collected.append(token)
                         yield f"data: {json.dumps({'type': 'token', 'text': token})}\n\n"
