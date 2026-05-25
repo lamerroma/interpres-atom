@@ -304,6 +304,13 @@ HTML = r"""<!DOCTYPE html>
   <div style="margin-bottom:12px; margin-top:8px;">
     <textarea id="input" rows="6" placeholder="Введіть текст тут..."></textarea>
   </div>
+  <div id="queue-banner" style="display:none; background:#fff7ed; border:1px solid #fb923c; border-radius:8px; padding:12px 16px; margin-bottom:12px; display:none; align-items:center; gap:10px;">
+    <span style="font-size:1.3rem;">⏳</span>
+    <div>
+      <strong style="color:#9a3412;">Запит у черзі</strong>
+      <span id="queue-banner-text" style="color:#7c2d12; font-size:.9rem;"></span>
+    </div>
+  </div>
   <div class="btn-row">
     <button id="btn" onclick="doTranslate()">Перекласти</button>
     <button id="stopBtn" class="btn-stop" onclick="doStop()">Зупинити</button>
@@ -451,6 +458,7 @@ async function doStop() {
     await fetch('/stop/' + _requestId, { method: 'POST' }).catch(() => {});
     _requestId = null;
   }
+  document.getElementById('queue-banner').style.display = 'none';
   document.getElementById('status').textContent = 'Зупинено';
   setWorking(false);
 }
@@ -464,6 +472,7 @@ async function doTranslate() {
   const status = document.getElementById('status');
 
   setWorking(true);
+  document.getElementById('queue-banner').style.display = 'none';
   log.textContent = '';
   result.value = '';
   status.textContent = 'Перекладаю...';
@@ -500,10 +509,14 @@ async function doTranslate() {
         let evt; try { evt = JSON.parse(line.slice(6)); } catch { continue; }
         if (evt.type === 'id') { _requestId = evt.text; }
         else if (evt.type === 'queue') {
+          const banner = document.getElementById('queue-banner');
+          const bannerText = document.getElementById('queue-banner-text');
           if (evt.ahead > 0) {
-            status.textContent = `⏳ В черзі: ${evt.ahead} запит${evt.ahead > 1 ? 'и' : ''} попереду...`;
-            status.className = 'status';
+            bannerText.textContent = ` — попереду ${evt.ahead} запит${evt.ahead > 1 ? 'и' : ''}. Очікуйте...`;
+            banner.style.display = 'flex';
+            status.textContent = '';
           } else {
+            banner.style.display = 'none';
             status.textContent = 'Перекладаю...';
           }
         }
