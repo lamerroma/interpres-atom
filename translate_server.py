@@ -147,7 +147,7 @@ async def basic_auth(request: Request, call_next):
             pass
     return Response(
         status_code=401,
-        headers={"WWW-Authenticate": 'Basic realm="Перекладач"'},
+        headers={"WWW-Authenticate": 'Basic realm="Translator"'},
     )
 
 
