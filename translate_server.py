@@ -721,9 +721,12 @@ def stop_translation(request_id: str):
 
 @app.post("/translate")
 def translate(req: TranslateRequest):
+    global _queue_size
     request_id = str(uuid.uuid4())
     stop_event = threading.Event()
     _active[request_id] = stop_event
+    with _qs_mutex:
+        _queue_size += 1
 
     def generate():
         def log(msg: str):
@@ -732,7 +735,6 @@ def translate(req: TranslateRequest):
         def ts():
             return datetime.datetime.now().strftime("%H:%M:%S")
 
-        global _queue_size
         ollama_acquired = False
 
         try:
@@ -761,9 +763,6 @@ def translate(req: TranslateRequest):
                 {"role": "system", "content": system_msg},
                 {"role": "user", "content": prompt},
             ]
-
-            with _qs_mutex:
-                _queue_size += 1
 
             while not ollama_acquired:
                 if stop_event.is_set():
