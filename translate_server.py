@@ -5,9 +5,11 @@ import datetime
 import uuid
 import threading
 import queue as _queue_mod
+import secrets
+import base64
 from urllib.parse import quote
 import requests as req_lib
-from fastapi import FastAPI, UploadFile, File, Form
+from fastapi import FastAPI, UploadFile, File, Form, Request
 from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse, Response
 from pydantic import BaseModel
 
@@ -23,6 +25,8 @@ DEFAULTS = {
     "chunk_size":      3000,
     "system_msg":      "You are a professional translator. Translate accurately and naturally, preserving the original tone and style.",
     "prompt_template": "{text}\n\n§ Translate the text above {direction}. This is a {context}. Keep all ⟨P⟩ and ⟨N⟩ markers exactly in place — they mark paragraph and line breaks. Preserve technical terms, proper nouns, and numbers exactly. Do not add notes or commentary. Output ONLY the translation. §",
+    "auth_user":       "admin",
+    "auth_pass":       "translate",
 }
 
 HOST = "0.0.0.0"
@@ -125,6 +129,27 @@ CFG = load_config()
 # ─────────────────────────────────────────────────────────────────────────────
 
 app = FastAPI()
+
+
+@app.middleware("http")
+async def basic_auth(request: Request, call_next):
+    if request.url.path == "/health":
+        return await call_next(request)
+    auth = request.headers.get("Authorization", "")
+    if auth.startswith("Basic "):
+        try:
+            decoded = base64.b64decode(auth[6:]).decode("utf-8")
+            user, _, pwd = decoded.partition(":")
+            if (secrets.compare_digest(user, CFG.get("auth_user", "admin")) and
+                    secrets.compare_digest(pwd, CFG.get("auth_pass", "translate"))):
+                return await call_next(request)
+        except Exception:
+            pass
+    return Response(
+        status_code=401,
+        headers={"WWW-Authenticate": 'Basic realm="Перекладач"'},
+    )
+
 
 _active: dict[str, threading.Event] = {}
 _results: dict[str, tuple[str, bytes]] = {}
