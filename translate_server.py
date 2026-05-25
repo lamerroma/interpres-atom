@@ -493,6 +493,46 @@ async function resetSettings() {
 // ── Text translation ──────────────────────────────────────────────────
 let _controller = null;
 let _requestId = null;
+let _thinkMode = false;
+let _tagBuf = '';
+
+function handleToken(text) {
+  const resultEl = document.getElementById('result');
+  const thinkEl  = document.getElementById('thinking');
+  const thinkCard = document.getElementById('thinking-card');
+  _tagBuf += text;
+  while (_tagBuf.length > 0) {
+    if (_thinkMode) {
+      const end = _tagBuf.indexOf('</think>');
+      if (end !== -1) {
+        thinkEl.textContent += _tagBuf.slice(0, end);
+        thinkEl.scrollTop = thinkEl.scrollHeight;
+        _tagBuf = _tagBuf.slice(end + 8);
+        _thinkMode = false;
+      } else if (_tagBuf.length > 8) {
+        const safe = _tagBuf.slice(0, _tagBuf.length - 8);
+        thinkEl.textContent += safe;
+        thinkEl.scrollTop = thinkEl.scrollHeight;
+        _tagBuf = _tagBuf.slice(safe.length);
+        break;
+      } else { break; }
+    } else {
+      const start = _tagBuf.indexOf('<think>');
+      if (start !== -1) {
+        resultEl.value += _tagBuf.slice(0, start);
+        _tagBuf = _tagBuf.slice(start + 7);
+        _thinkMode = true;
+        thinkCard.style.display = 'block';
+        document.getElementById('thinking-details').open = true;
+      } else if (_tagBuf.length > 7) {
+        const safe = _tagBuf.slice(0, _tagBuf.length - 7);
+        resultEl.value += safe;
+        _tagBuf = _tagBuf.slice(safe.length);
+        break;
+      } else { break; }
+    }
+  }
+}
 
 function setWorking(on) {
   document.getElementById('btn').disabled = on;
@@ -525,6 +565,8 @@ async function doTranslate() {
   status.textContent = 'Перекладаю...';
   document.getElementById('thinking').textContent = '';
   document.getElementById('thinking-card').style.display = 'none';
+  _thinkMode = false;
+  _tagBuf = '';
 
   const startTime = Date.now();
   _controller = new AbortController();
@@ -579,7 +621,7 @@ async function doTranslate() {
           }
         }
         else if (evt.type === 'log') { log.textContent += evt.text + '\n'; log.scrollTop = log.scrollHeight; }
-        else if (evt.type === 'token') { result.value += evt.text; }
+        else if (evt.type === 'token') { handleToken(evt.text); }
         else if (evt.type === 'result') {
           result.value = evt.text;
           status.textContent = `Готово за ${((Date.now()-startTime)/1000).toFixed(1)}с`;
