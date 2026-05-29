@@ -90,7 +90,6 @@ if getattr(sys, 'frozen', False):
 else:
     _app_dir = os.path.dirname(os.path.abspath(__file__))
 
-_theme_path = os.path.join(_app_dir, "theme_custom.json")
 
 _log_name = f"log_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
 _log_path = os.path.join(_app_dir, _log_name)
@@ -332,7 +331,7 @@ class QuickTranslateWindow(ctk.CTkToplevel):
         # Left — input
         left = ctk.CTkFrame(cols, fg_color=("gray88", "gray17"), corner_radius=8)
         left.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
-        left.rowconfigure(0, weight=1)
+        left.rowconfigure(1, weight=1)
         left.columnconfigure(0, weight=1)
 
         ctk.CTkLabel(left, text="Оригінал", font=ctk.CTkFont(size=12),
@@ -351,7 +350,7 @@ class QuickTranslateWindow(ctk.CTkToplevel):
         # Right — output
         right = ctk.CTkFrame(cols, fg_color=("gray88", "gray17"), corner_radius=8)
         right.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
-        right.rowconfigure(0, weight=1)
+        right.rowconfigure(1, weight=1)
         right.columnconfigure(0, weight=1)
 
         ctk.CTkLabel(right, text="Переклад", font=ctk.CTkFont(size=12),
@@ -476,12 +475,8 @@ class App(ctk.CTk):
     def __init__(self):
         super().__init__()
 
-        self._theme = "dark"
-        ctk.set_appearance_mode(self._theme)
-        if os.path.isfile(_theme_path):
-            ctk.set_default_color_theme(_theme_path)
-        else:
-            ctk.set_default_color_theme("blue")
+        ctk.set_appearance_mode("dark")
+        ctk.set_default_color_theme("blue")
 
         self.title(f"Перекладач АПІ  v{VERSION}")
         self.resizable(False, False)
@@ -528,14 +523,7 @@ class App(ctk.CTk):
             fg_color="transparent", hover_color=("gray80", "gray25"),
             text_color=("gray40", "gray65"),
             command=self._open_about,
-        ).pack(side="left", padx=(0, 10))
-        ctk.CTkLabel(theme_frame, text="☀", font=ctk.CTkFont(size=14)).pack(side="left", padx=(0, 2))
-        self._theme_switch = ctk.CTkSwitch(
-            theme_frame, text="", width=44, command=self._toggle_theme,
-        )
-        self._theme_switch.pack(side="left")
-        self._theme_switch.select()
-        ctk.CTkLabel(theme_frame, text="🌙", font=ctk.CTkFont(size=14)).pack(side="left", padx=(2, 0))
+        ).pack(side="left")
 
         # ── Settings card ────────────────────────────────────────────────────
         card = ctk.CTkFrame(self, fg_color=("gray88", "gray17"), corner_radius=10)
@@ -667,12 +655,6 @@ class App(ctk.CTk):
     def _fit_window(self):
         self.update_idletasks()
         self.geometry(f"640x{self.winfo_reqheight()}")
-
-    # ── Theme ─────────────────────────────────────────────────────────────────
-
-    def _toggle_theme(self):
-        self._theme = "dark" if self._theme_switch.get() else "light"
-        ctk.set_appearance_mode(self._theme)
 
     # ── About ─────────────────────────────────────────────────────────────────
 
