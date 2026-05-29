@@ -16,6 +16,7 @@ os.environ["http_proxy"] = ""
 os.environ["https_proxy"] = ""
 
 import ollama
+import tkinter as tk
 from tkinter import filedialog, messagebox
 from docx import Document
 from docx.shared import Pt
@@ -437,6 +438,7 @@ class QuickTranslateWindow(ctk.CTkToplevel):
             left, font=ctk.CTkFont(size=13), wrap="word", fg_color="transparent",
         )
         self._input_box.grid(row=1, column=0, sticky="nsew", padx=6, pady=(0, 6))
+        self._attach_context_menu(self._input_box, readonly=False)
 
         ctk.CTkButton(
             left, text="Очистити", width=90, height=26,
@@ -457,6 +459,7 @@ class QuickTranslateWindow(ctk.CTkToplevel):
             fg_color="transparent", state="disabled",
         )
         self._output_box.grid(row=1, column=0, sticky="nsew", padx=6, pady=(0, 6))
+        self._attach_context_menu(self._output_box, readonly=True)
 
         btn_row = ctk.CTkFrame(right, fg_color="transparent")
         btn_row.grid(row=2, column=0, sticky="e", padx=10, pady=(0, 8))
@@ -476,6 +479,35 @@ class QuickTranslateWindow(ctk.CTkToplevel):
             self, text="", font=ctk.CTkFont(size=11), text_color="gray",
         )
         self._status_label.pack(pady=(0, 8))
+
+    def _attach_context_menu(self, textbox, readonly=False):
+        w = textbox._textbox
+
+        menu = tk.Menu(self, tearoff=0)
+        if not readonly:
+            menu.add_command(label="Вирізати",    command=lambda: w.event_generate("<<Cut>>"))
+        menu.add_command(    label="Копіювати",   command=lambda: w.event_generate("<<Copy>>"))
+        if not readonly:
+            menu.add_command(label="Вставити",    command=lambda: w.event_generate("<<Paste>>"))
+            menu.add_command(label="Видалити",    command=lambda: w.delete("sel.first", "sel.last") if w.tag_ranges("sel") else None)
+            menu.add_separator()
+            menu.add_command(label="Вибрати все", command=lambda: (w.tag_add("sel", "1.0", "end"), w.mark_set("insert", "end")))
+        else:
+            menu.add_separator()
+            menu.add_command(label="Вибрати все", command=lambda: (w.tag_add("sel", "1.0", "end"), w.mark_set("insert", "end")))
+
+        def show(event):
+            try:
+                menu.tk_popup(event.x_root, event.y_root)
+            finally:
+                menu.grab_release()
+
+        w.bind("<Button-3>", show)
+
+        if not readonly:
+            # Fix paste for non-Latin keyboard layouts (e.g. Ukrainian)
+            w.bind("<Control-v>", lambda e: (w.event_generate("<<Paste>>"), "break"))
+            w.bind("<Control-V>", lambda e: (w.event_generate("<<Paste>>"), "break"))
 
     def _open_all_langs(self):
         def set_lang(lang):
