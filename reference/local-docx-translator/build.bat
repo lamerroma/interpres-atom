@@ -3,7 +3,7 @@ echo ============================================================
 echo  Building Translate_word_to_Word.exe
 echo ============================================================
 
-pip install pyinstaller python-docx ollama customtkinter -q
+pip install pyinstaller python-docx ollama customtkinter pymupdf -q
 
 pyinstaller --onefile --windowed --name "Translate_word_to_Word" Translate_word_to_Word.py
 

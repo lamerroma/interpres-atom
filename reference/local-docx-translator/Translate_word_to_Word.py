@@ -22,7 +22,7 @@ from docx import Document
 from docx.shared import Pt
 import customtkinter as ctk
 
-VERSION = "3.11.0"
+VERSION = "3.12.0"
 AUTHOR = "Роман Гавриш (Coyotl)"
 
 _EMBEDDED_THEME = {
@@ -221,6 +221,98 @@ def translate_text(text, target_lang, model_name, host):
     except Exception as e:
         log_file(f"  [ERROR] {e}")
         return text
+
+
+def run_translation_pdf(input_path, target_lang, model_name, host, msg_queue, stop_event):
+    try:
+        import fitz
+    except ImportError:
+        msg_queue.put(("error", "Бібліотека PyMuPDF не встановлена.\nВстановіть: pip install pymupdf"))
+        return
+    try:
+        source_dir = os.path.dirname(input_path)
+        filename = os.path.basename(input_path)
+        output_path = os.path.join(source_dir, f"TR_{target_lang}_{filename}")
+
+        msg_queue.put(("log", f"Відкриваю PDF: {filename}"))
+        log_file(f"[FILE] {input_path}")
+
+        doc = fitz.open(input_path)
+        total_pages = len(doc)
+        msg_queue.put(("log", f"Сторінок: {total_pages}"))
+        msg_queue.put(("total", total_pages))
+
+        for page_num in range(total_pages):
+            if stop_event.is_set():
+                msg_queue.put(("log", "⛔ Зупинено користувачем"))
+                msg_queue.put(("stopped", None))
+                doc.close()
+                return
+
+            msg_queue.put(("log", f"[{page_num + 1}/{total_pages}] Обробка сторінки..."))
+            page = doc[page_num]
+
+            # Collect text blocks with positions
+            raw = page.get_text("dict", flags=fitz.TEXT_PRESERVE_WHITESPACE)
+            blocks = [b for b in raw["blocks"] if b["type"] == 0]
+
+            # Build list of (bbox, text, fontsize, color) per block
+            items = []
+            for block in blocks:
+                lines_text = []
+                fontsize = 11
+                color = 0
+                for line in block["lines"]:
+                    for span in line["spans"]:
+                        if span["text"].strip():
+                            lines_text.append(span["text"])
+                            fontsize = span["size"]
+                            color = span["color"]
+                full_text = " ".join(lines_text).strip()
+                if full_text:
+                    items.append((fitz.Rect(block["bbox"]), full_text, fontsize, color))
+
+            if not items:
+                msg_queue.put(("progress", page_num + 1))
+                continue
+
+            # Redact all original text blocks at once
+            for rect, _, _, _ in items:
+                page.add_redact_annot(rect, fill=(1, 1, 1))
+            page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE)
+
+            # Insert translated text into each block area
+            for rect, text, fontsize, color_int in items:
+                if stop_event.is_set():
+                    break
+                translated = translate_text(text, target_lang, model_name, host)
+                log_file(f"  [PDF p{page_num+1}] {repr(text[:60])} → {repr(translated[:60])}")
+
+                # Unpack integer color to RGB floats
+                r = ((color_int >> 16) & 0xFF) / 255
+                g = ((color_int >> 8) & 0xFF) / 255
+                b = (color_int & 0xFF) / 255
+
+                # Insert text fitting inside the original block rect
+                page.insert_textbox(
+                    rect, translated,
+                    fontsize=max(fontsize - 0.5, 6),
+                    color=(r, g, b),
+                    align=0,
+                    overflow="ignore",
+                )
+
+            msg_queue.put(("progress", page_num + 1))
+
+        doc.save(output_path, garbage=4, deflate=True)
+        doc.close()
+        log_file(f"[FILE] Saved: {output_path}")
+        msg_queue.put(("log", f"✓ Збережено → TR_{target_lang}_{filename}"))
+        msg_queue.put(("done", output_path))
+
+    except Exception as e:
+        log_file(f"[ERROR] {e}")
+        msg_queue.put(("error", str(e)))
 
 
 def run_translation(input_path, target_lang, model_name, host, msg_queue, stop_event):
@@ -929,8 +1021,12 @@ class App(ctk.CTk):
 
     def _browse(self):
         path = filedialog.askopenfilename(
-            title="Виберіть DOCX файл",
-            filetypes=[("Word документи", "*.docx")],
+            title="Виберіть файл для перекладу",
+            filetypes=[
+                ("Підтримувані файли", "*.docx *.pdf"),
+                ("Word документи", "*.docx"),
+                ("PDF документи", "*.pdf"),
+            ],
         )
         if path:
             self._file_var.set(path)
@@ -940,10 +1036,14 @@ class App(ctk.CTk):
     def _start(self):
         input_path = self._file_var.get()
         if not input_path or input_path == "Файл не вибрано":
-            messagebox.showwarning("Файл не вибрано", "Будь ласка, виберіть DOCX файл.")
+            messagebox.showwarning("Файл не вибрано", "Будь ласка, виберіть DOCX або PDF файл.")
             return
         if not os.path.isfile(input_path):
             messagebox.showerror("Файл не знайдено", f"Файл не існує:\n{input_path}")
+            return
+        ext = os.path.splitext(input_path)[1].lower()
+        if ext not in (".docx", ".pdf"):
+            messagebox.showerror("Непідтримуваний формат", "Підтримуються лише DOCX та PDF файли.")
             return
         model = self._model_var.get()
         if model in ("Завантаження...", "Підключення...", "— немає з'єднання —"):
@@ -957,11 +1057,13 @@ class App(ctk.CTk):
         self._start_btn.configure(state="disabled", text="Перекладаю...")
         self._stop_btn.configure(state="normal")
 
+        worker_fn = run_translation_pdf if ext == ".pdf" else run_translation
+
         self._stop_event = threading.Event()
         self._msg_queue = queue.Queue()
         self._total_runs = 0
         self._worker = threading.Thread(
-            target=run_translation,
+            target=worker_fn,
             args=(input_path, self._selected_lang, model,
                   self._get_host(), self._msg_queue, self._stop_event),
             daemon=True,
