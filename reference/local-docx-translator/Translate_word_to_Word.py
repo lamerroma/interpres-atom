@@ -18,7 +18,7 @@ from docx import Document
 from docx.shared import Pt
 import customtkinter as ctk
 
-VERSION = "3.4.0"
+VERSION = "3.5.0"
 DEFAULT_OLLAMA_HOST = "http://127.0.0.1:11434"
 
 POPULAR_LANGUAGES = [
@@ -221,7 +221,6 @@ class App(ctk.CTk):
             ctk.set_default_color_theme("blue")
 
         self.title(f"Перекладач DOCX  v{VERSION}")
-        self.geometry("640x680")
         self.resizable(False, False)
 
         self._msg_queue = queue.Queue()
@@ -355,6 +354,10 @@ class App(ctk.CTk):
         )
         self._stop_btn.pack(side="left")
 
+    def _fit_window(self):
+        self.update_idletasks()
+        self.geometry(f"640x{self.winfo_reqheight()}")
+
     # ── Theme ──
 
     def _toggle_theme(self):
@@ -372,6 +375,7 @@ class App(ctk.CTk):
         else:
             self._server_frame.pack_forget()
             self._srv_toggle_btn.configure(text="▶  Налаштування сервера")
+        self._fit_window()
 
     def _apply_server(self):
         host = self._host_var.get().strip()
@@ -395,6 +399,7 @@ class App(ctk.CTk):
         else:
             self._log_box.pack_forget()
             self._log_toggle_btn.configure(text="▶  Журнал виконання")
+        self._fit_window()
 
     # ── Language ──
 
