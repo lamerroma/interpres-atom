@@ -18,7 +18,7 @@ from docx import Document
 from docx.shared import Pt
 import customtkinter as ctk
 
-VERSION = "3.7.0"
+VERSION = "3.8.0"
 DEFAULT_OLLAMA_HOST = "http://127.0.0.1:11434"
 
 POPULAR_LANGUAGES = [
@@ -213,6 +213,169 @@ class AllLanguagesDialog(ctk.CTkToplevel):
         self.destroy()
 
 
+# ── Quick Translate Window ───────────────────────────────────────────────────
+
+class QuickTranslateWindow(ctk.CTkToplevel):
+    def __init__(self, parent, get_model, get_host):
+        super().__init__(parent)
+        self._get_model = get_model
+        self._get_host = get_host
+        self._translating = False
+
+        self.title("Швидкий переклад")
+        self.geometry("780x440")
+        self.resizable(True, True)
+        self.minsize(600, 360)
+        self.lift()
+        self.focus_force()
+
+        self._build_ui()
+
+    def _build_ui(self):
+        # ── Top bar: lang selector + translate button ──
+        top = ctk.CTkFrame(self, fg_color="transparent")
+        top.pack(fill="x", padx=14, pady=(12, 6))
+
+        ctk.CTkLabel(top, text="Мова перекладу:", anchor="w").pack(side="left", padx=(0, 8))
+        self._lang_var = ctk.StringVar(value=POPULAR_LANGUAGES[0])
+        self._lang_menu = ctk.CTkOptionMenu(
+            top, variable=self._lang_var, values=POPULAR_LANGUAGES, width=200,
+        )
+        self._lang_menu.pack(side="left", padx=(0, 8))
+        ctk.CTkButton(top, text="Всі мови...", width=100,
+                      command=self._open_all_langs).pack(side="left", padx=(0, 16))
+
+        self._translate_btn = ctk.CTkButton(
+            top, text="Перекласти  →", width=150, height=32,
+            font=ctk.CTkFont(size=13, weight="bold"),
+            command=self._translate,
+        )
+        self._translate_btn.pack(side="right")
+
+        # ── Two columns ──
+        cols = ctk.CTkFrame(self, fg_color="transparent")
+        cols.pack(fill="both", expand=True, padx=14, pady=(0, 6))
+        cols.columnconfigure(0, weight=1)
+        cols.columnconfigure(1, weight=1)
+        cols.rowconfigure(0, weight=1)
+
+        # Left — input
+        left = ctk.CTkFrame(cols, fg_color=("gray88", "gray17"), corner_radius=8)
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
+        left.rowconfigure(0, weight=1)
+        left.columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(left, text="Оригінал", font=ctk.CTkFont(size=12),
+                     text_color="gray").grid(row=0, column=0, sticky="w", padx=10, pady=(8, 2))
+        self._input_box = ctk.CTkTextbox(
+            left, font=ctk.CTkFont(size=13), wrap="word", fg_color="transparent",
+        )
+        self._input_box.grid(row=1, column=0, sticky="nsew", padx=6, pady=(0, 6))
+
+        ctk.CTkButton(
+            left, text="Очистити", width=90, height=26,
+            fg_color="gray40", hover_color="gray30",
+            command=lambda: self._input_box.delete("1.0", "end"),
+        ).grid(row=2, column=0, sticky="e", padx=10, pady=(0, 8))
+
+        # Right — output
+        right = ctk.CTkFrame(cols, fg_color=("gray88", "gray17"), corner_radius=8)
+        right.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
+        right.rowconfigure(0, weight=1)
+        right.columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(right, text="Переклад", font=ctk.CTkFont(size=12),
+                     text_color="gray").grid(row=0, column=0, sticky="w", padx=10, pady=(8, 2))
+        self._output_box = ctk.CTkTextbox(
+            right, font=ctk.CTkFont(size=13), wrap="word",
+            fg_color="transparent", state="disabled",
+        )
+        self._output_box.grid(row=1, column=0, sticky="nsew", padx=6, pady=(0, 6))
+
+        btn_row = ctk.CTkFrame(right, fg_color="transparent")
+        btn_row.grid(row=2, column=0, sticky="e", padx=10, pady=(0, 8))
+        ctk.CTkButton(
+            btn_row, text="Копіювати", width=90, height=26,
+            fg_color="gray40", hover_color="gray30",
+            command=self._copy_result,
+        ).pack(side="left", padx=(0, 6))
+        ctk.CTkButton(
+            btn_row, text="⟳", width=36, height=26,
+            fg_color="gray40", hover_color="gray30",
+            command=self._translate,
+        ).pack(side="left")
+
+        # ── Status ──
+        self._status_label = ctk.CTkLabel(
+            self, text="", font=ctk.CTkFont(size=11), text_color="gray",
+        )
+        self._status_label.pack(pady=(0, 8))
+
+    def _open_all_langs(self):
+        def set_lang(lang):
+            values = list(self._lang_menu.cget("values"))
+            if lang not in values:
+                values = [v for v in values if v in POPULAR_LANGUAGES]
+                values.append(lang)
+                self._lang_menu.configure(values=values)
+            self._lang_var.set(lang)
+        AllLanguagesDialog(self, set_lang)
+
+    def _translate(self):
+        if self._translating:
+            return
+        text = self._input_box.get("1.0", "end").strip()
+        if not text:
+            return
+
+        model = self._get_model()
+        if model in ("Завантаження...", "Підключення...", "— немає з'єднання —"):
+            self._status_label.configure(text="Модель недоступна — перевірте підключення до Ollama")
+            return
+
+        lang_raw = self._lang_var.get()
+        target_lang = LANG_UK_TO_EN.get(lang_raw, lang_raw)
+
+        self._translating = True
+        self._translate_btn.configure(state="disabled", text="Перекладаю...")
+        self._status_label.configure(text="")
+
+        self._output_box.configure(state="normal")
+        self._output_box.delete("1.0", "end")
+        self._output_box.configure(state="disabled")
+
+        def worker():
+            try:
+                result = translate_text(text, target_lang, model, self._get_host())
+                self.after(0, lambda: self._show_result(result))
+            except Exception as e:
+                self.after(0, lambda: self._show_error(str(e)))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _show_result(self, result):
+        self._output_box.configure(state="normal")
+        self._output_box.insert("1.0", result)
+        self._output_box.configure(state="disabled")
+        self._translate_btn.configure(state="normal", text="Перекласти  →")
+        char_count = len(result)
+        self._status_label.configure(text=f"{char_count} символів")
+        self._translating = False
+
+    def _show_error(self, err):
+        self._status_label.configure(text=f"Помилка: {err}")
+        self._translate_btn.configure(state="normal", text="Перекласти  →")
+        self._translating = False
+
+    def _copy_result(self):
+        text = self._output_box.get("1.0", "end").strip()
+        if text:
+            self.clipboard_clear()
+            self.clipboard_append(text)
+            self._status_label.configure(text="Скопійовано!")
+            self.after(2000, lambda: self._status_label.configure(text=""))
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _divider(parent):
@@ -284,6 +447,11 @@ class App(ctk.CTk):
 
         theme_frame = ctk.CTkFrame(header, fg_color="transparent")
         theme_frame.pack(side="right")
+        ctk.CTkButton(
+            theme_frame, text="⚡ Швидкий переклад", width=150, height=30,
+            font=ctk.CTkFont(size=12),
+            command=self._open_quick_translate,
+        ).pack(side="left", padx=(0, 12))
         ctk.CTkLabel(theme_frame, text="☀", font=ctk.CTkFont(size=14)).pack(side="left", padx=(0, 2))
         self._theme_switch = ctk.CTkSwitch(
             theme_frame, text="", width=44, command=self._toggle_theme,
@@ -428,6 +596,19 @@ class App(ctk.CTk):
     def _toggle_theme(self):
         self._theme = "dark" if self._theme_switch.get() else "light"
         ctk.set_appearance_mode(self._theme)
+
+    # ── Quick Translate ───────────────────────────────────────────────────────
+
+    def _open_quick_translate(self):
+        if hasattr(self, "_quick_win") and self._quick_win.winfo_exists():
+            self._quick_win.lift()
+            self._quick_win.focus_force()
+            return
+        self._quick_win = QuickTranslateWindow(
+            self,
+            get_model=self._model_var.get,
+            get_host=self._get_host,
+        )
 
     # ── Server settings ───────────────────────────────────────────────────────
 
