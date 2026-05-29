@@ -18,7 +18,7 @@ from docx import Document
 from docx.shared import Pt
 import customtkinter as ctk
 
-VERSION = "3.3.0"
+VERSION = "3.4.0"
 DEFAULT_OLLAMA_HOST = "http://127.0.0.1:11434"
 
 POPULAR_LANGUAGES = [
@@ -68,6 +68,8 @@ if getattr(sys, 'frozen', False):
     _app_dir = os.path.dirname(sys.executable)
 else:
     _app_dir = os.path.dirname(os.path.abspath(__file__))
+
+_theme_path = os.path.join(_app_dir, "theme_custom.json")
 
 _log_name = f"log_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
 _log_path = os.path.join(_app_dir, _log_name)
@@ -213,7 +215,10 @@ class App(ctk.CTk):
 
         self._theme = "dark"
         ctk.set_appearance_mode(self._theme)
-        ctk.set_default_color_theme("green")
+        if os.path.isfile(_theme_path):
+            ctk.set_default_color_theme(_theme_path)
+        else:
+            ctk.set_default_color_theme("blue")
 
         self.title(f"Перекладач DOCX  v{VERSION}")
         self.geometry("640x680")
