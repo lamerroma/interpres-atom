@@ -18,7 +18,7 @@ from docx import Document
 from docx.shared import Pt
 import customtkinter as ctk
 
-VERSION = "3.8.0"
+VERSION = "3.9.0"
 DEFAULT_OLLAMA_HOST = "http://127.0.0.1:11434"
 
 POPULAR_LANGUAGES = [
@@ -413,7 +413,7 @@ class App(ctk.CTk):
         else:
             ctk.set_default_color_theme("blue")
 
-        self.title(f"Перекладач DOCX  v{VERSION}")
+        self.title(f"Перекладач АПІ  v{VERSION}")
         self.resizable(False, False)
 
         self._msg_queue = queue.Queue()
@@ -437,7 +437,7 @@ class App(ctk.CTk):
         header.pack(fill="x", padx=16, pady=(14, 6))
 
         ctk.CTkLabel(
-            header, text=f"Перекладач DOCX",
+            header, text=f"Перекладач АПІ",
             font=ctk.CTkFont(size=19, weight="bold"),
         ).pack(side="left")
         ctk.CTkLabel(
