@@ -1,5 +1,8 @@
 import os
 import sys
+import json
+import tempfile
+import atexit
 import datetime
 import threading
 import queue
@@ -18,8 +21,41 @@ from docx import Document
 from docx.shared import Pt
 import customtkinter as ctk
 
-VERSION = "3.10.0"
+VERSION = "3.11.0"
 AUTHOR = "Роман Гавриш (Coyotl)"
+
+_EMBEDDED_THEME = {
+    "CTk":                  {"fg_color": ["gray92", "gray14"]},
+    "CTkToplevel":          {"fg_color": ["gray92", "gray14"]},
+    "CTkFrame":             {"fg_color": ["gray86", "gray17"], "top_fg_color": ["gray81", "gray20"], "border_color": ["gray65", "gray28"]},
+    "CTkButton":            {"fg_color": ["#A0845C", "#1F6AA5"], "hover_color": ["#8A6E4A", "#144870"], "border_color": ["#3E454A", "#949A9F"], "text_color": ["#F5EFE6", "#DCE4EE"], "text_color_disabled": ["gray74", "gray60"]},
+    "CTkLabel":             {"fg_color": "transparent", "text_color": ["gray14", "gray84"]},
+    "CTkEntry":             {"fg_color": ["#F9F5F0", "#343638"], "border_color": ["#C4A882", "#565B5E"], "text_color": ["gray14", "gray84"], "placeholder_text_color": ["gray52", "gray62"]},
+    "CTkCheckBox":          {"fg_color": ["#A0845C", "#1F6AA5"], "border_color": ["#A0845C", "#565B5E"], "hover_color": ["#8A6E4A", "#144870"], "checkmark_color": ["#F5EFE6", "#DCE4EE"], "text_color": ["gray14", "gray84"], "text_color_disabled": ["gray60", "gray45"]},
+    "CTkSwitch":            {"fg_color": ["#C4A882", "#4A4D50"], "progress_color": ["#A0845C", "#1F6AA5"], "button_color": ["gray36", "gray85"], "button_hover_color": ["gray20", "gray100"], "text_color": ["gray14", "gray84"], "text_color_disabled": ["gray60", "gray45"]},
+    "CTkRadioButton":       {"fg_color": ["#A0845C", "#1F6AA5"], "border_color": ["#A0845C", "#565B5E"], "hover_color": ["#8A6E4A", "#144870"], "text_color": ["gray14", "gray84"], "text_color_disabled": ["gray60", "gray45"]},
+    "CTkProgressBar":       {"fg_color": ["#D8C9B8", "#4A4D50"], "progress_color": ["#A0845C", "#1F6AA5"], "border_color": ["gray", "gray"]},
+    "CTkSlider":            {"fg_color": ["#D8C9B8", "#4A4D50"], "progress_color": ["#A0845C", "#1F6AA5"], "button_color": ["#A0845C", "#1F6AA5"], "button_hover_color": ["#8A6E4A", "#144870"]},
+    "CTkOptionMenu":        {"fg_color": ["#A0845C", "#1F6AA5"], "button_color": ["#8A6E4A", "#144870"], "button_hover_color": ["#74583A", "#0D3A5C"], "text_color": ["#F5EFE6", "#DCE4EE"], "text_color_disabled": ["gray74", "gray60"]},
+    "CTkComboBox":          {"fg_color": ["#F9F5F0", "#343638"], "border_color": ["#C4A882", "#565B5E"], "button_color": ["#C4A882", "#565B5E"], "button_hover_color": ["#A0845C", "#1F6AA5"], "text_color": ["gray14", "gray84"], "text_color_disabled": ["gray74", "gray60"]},
+    "CTkScrollbar":         {"fg_color": "transparent", "button_color": ["#C4A882", "#565B5E"], "button_hover_color": ["#A0845C", "#1F6AA5"]},
+    "CTkSegmentedButton":   {"fg_color": ["#D8C9B8", "#3B3B3B"], "selected_color": ["#A0845C", "#1F6AA5"], "selected_hover_color": ["#8A6E4A", "#144870"], "unselected_color": ["#D8C9B8", "#3B3B3B"], "unselected_hover_color": ["#C4A882", "#41414A"], "text_color": ["gray14", "gray84"], "text_color_disabled": ["gray74", "gray60"]},
+    "CTkTextbox":           {"fg_color": ["#F9F5F0", "#343638"], "border_color": ["#C4A882", "#565B5E"], "text_color": ["gray14", "gray84"], "scrollbar_button_color": ["#C4A882", "#565B5E"], "scrollbar_button_hover_color": ["#A0845C", "#1F6AA5"]},
+    "CTkScrollableFrame":   {"label_fg_color": ["#D8C9B8", "gray21"]},
+    "DropdownMenu":         {"fg_color": ["#F9F5F0", "gray17"], "hover_color": ["#E8DDD0", "gray28"], "text_color": ["gray14", "gray84"]},
+    "CTkFont": {
+        "macOS":   {"family": "SF Display",  "size": 13, "weight": "normal"},
+        "Windows": {"family": "Segoe UI",    "size": 13, "weight": "normal"},
+        "Linux":   {"family": "Roboto",      "size": 13, "weight": "normal"},
+    },
+}
+
+def _load_embedded_theme():
+    tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8")
+    json.dump(_EMBEDDED_THEME, tmp)
+    tmp.close()
+    atexit.register(os.unlink, tmp.name)
+    return tmp.name
 
 ABOUT_TEXT = """\
 Перекладач АПІ — локальний інструмент для перекладу \
@@ -476,7 +512,7 @@ class App(ctk.CTk):
         super().__init__()
 
         ctk.set_appearance_mode("dark")
-        ctk.set_default_color_theme("blue")
+        ctk.set_default_color_theme(_load_embedded_theme())
 
         self.title(f"Перекладач АПІ  v{VERSION}")
         self.resizable(False, False)
@@ -517,6 +553,13 @@ class App(ctk.CTk):
             font=ctk.CTkFont(size=12),
             command=self._open_quick_translate,
         ).pack(side="left", padx=(0, 8))
+        ctk.CTkLabel(theme_frame, text="☀", font=ctk.CTkFont(size=14)).pack(side="left", padx=(0, 2))
+        self._theme_switch = ctk.CTkSwitch(
+            theme_frame, text="", width=44, command=self._toggle_theme,
+        )
+        self._theme_switch.pack(side="left")
+        self._theme_switch.select()
+        ctk.CTkLabel(theme_frame, text="🌙", font=ctk.CTkFont(size=14)).pack(side="left", padx=(2, 10))
         ctk.CTkButton(
             theme_frame, text="ℹ", width=30, height=30,
             font=ctk.CTkFont(size=14),
@@ -655,6 +698,12 @@ class App(ctk.CTk):
     def _fit_window(self):
         self.update_idletasks()
         self.geometry(f"640x{self.winfo_reqheight()}")
+
+    # ── Theme ─────────────────────────────────────────────────────────────────
+
+    def _toggle_theme(self):
+        mode = "dark" if self._theme_switch.get() else "light"
+        ctk.set_appearance_mode(mode)
 
     # ── About ─────────────────────────────────────────────────────────────────
 
