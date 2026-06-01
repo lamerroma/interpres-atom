@@ -1,17 +1,25 @@
 import io
 import json
 import os
+import sqlite3
+import logging
+import traceback
 import datetime
 import uuid
 import threading
 import queue as _queue_mod
 import secrets
 import base64
+import time
 from urllib.parse import quote
 import requests as req_lib
 from fastapi import FastAPI, UploadFile, File, Form, Request
 from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse, Response
 from pydantic import BaseModel
+
+logging.basicConfig(level=logging.INFO,
+                    format='%(asctime)s %(levelname)s %(message)s')
+log = logging.getLogger("translator")
 
 # ── Configuration ────────────────────────────────────────────────────────────
 
@@ -27,6 +35,8 @@ DEFAULTS = {
     "prompt_template": "{text}\n\n§ Translate the text above {direction}. This is a {context}. Keep all ⟨P⟩ and ⟨N⟩ markers exactly in place — they mark paragraph and line breaks. Preserve technical terms, proper nouns, and numbers exactly. Do not add notes or commentary. Output ONLY the translation. §",
     "auth_user":       "admin",
     "auth_pass":       "translate",
+    "max_pdf_pages":   10,
+    "max_chars":       30000,
 }
 
 HOST = "0.0.0.0"
@@ -125,6 +135,85 @@ def save_config(cfg: dict) -> None:
 
 
 CFG = load_config()
+
+# ── Stats DB ─────────────────────────────────────────────────────────────────
+
+STATS_DB = os.path.join(os.path.dirname(__file__), "stats.db")
+_stats_lock = threading.Lock()
+
+
+def _stats_conn():
+    conn = sqlite3.connect(STATS_DB)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def init_stats_db():
+    with _stats_conn() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS stats (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL,
+                ip TEXT,
+                kind TEXT NOT NULL,
+                filename TEXT,
+                file_ext TEXT,
+                lang_from TEXT,
+                lang_to TEXT,
+                chars INTEGER,
+                pages INTEGER,
+                duration REAL,
+                status TEXT NOT NULL,
+                error TEXT
+            )
+        """)
+        conn.commit()
+
+
+def log_stat(**kwargs):
+    fields = ["timestamp", "ip", "kind", "filename", "file_ext",
+              "lang_from", "lang_to", "chars", "pages", "duration",
+              "status", "error"]
+    values = [kwargs.get(f) for f in fields]
+    if not values[0]:
+        values[0] = datetime.datetime.now().isoformat(timespec="seconds")
+    try:
+        with _stats_lock, _stats_conn() as conn:
+            conn.execute(
+                f"INSERT INTO stats ({','.join(fields)}) "
+                f"VALUES ({','.join(['?'] * len(fields))})",
+                values,
+            )
+            conn.commit()
+    except Exception as e:
+        log.error(f"log_stat failed: {e}")
+
+
+def get_recent_stats(limit=100):
+    with _stats_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM stats ORDER BY id DESC LIMIT ?", (limit,)
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_stats_summary():
+    with _stats_conn() as conn:
+        row = conn.execute("""
+            SELECT
+              COUNT(*) AS total,
+              SUM(CASE WHEN status='success' THEN 1 ELSE 0 END) AS success,
+              SUM(CASE WHEN status='error' THEN 1 ELSE 0 END) AS errors,
+              SUM(CASE WHEN status='stopped' THEN 1 ELSE 0 END) AS stopped,
+              SUM(chars) AS total_chars,
+              SUM(duration) AS total_seconds,
+              SUM(pages) AS total_pages
+            FROM stats
+        """).fetchone()
+    return dict(row) if row else {}
+
+
+init_stats_db()
 
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -292,11 +381,21 @@ def translate_docx_bytes(content, base_name, lang_from, lang_to,
     runs = [r for p in all_paras for r in p.runs
             if r.text.strip() and len(r.text.strip()) >= 2]
     total = len(runs)
-    yield ("log", f"DOCX: {total} текстових фрагментів")
+    total_chars = sum(len(r.text) for r in runs)
+    yield ("log", f"DOCX: {total} текстових фрагментів, {total_chars} символів")
 
     if total == 0:
         yield ("error", "У файлі не знайдено тексту для перекладу")
         return
+
+    max_chars = CFG.get("max_chars", 30000)
+    if total_chars > max_chars:
+        yield ("error",
+               f"Файл занадто великий: {total_chars} символів "
+               f"(максимум {max_chars})")
+        return
+
+    yield ("meta", {"chars": total_chars, "pages": None})
 
     for i, run in enumerate(runs, 1):
         if stop_event.is_set():
@@ -349,6 +448,16 @@ def translate_pdf_bytes(content, base_name, lang_from, lang_to,
 
     total_pages = len(doc)
     yield ("log", f"PDF: {total_pages} сторінок")
+
+    max_pages = CFG.get("max_pdf_pages", 10)
+    if total_pages > max_pages:
+        doc.close()
+        yield ("error",
+               f"PDF занадто великий: {total_pages} сторінок "
+               f"(максимум {max_pages})")
+        return
+
+    yield ("meta", {"chars": None, "pages": total_pages})
 
     for page_num in range(total_pages):
         if stop_event.is_set():
@@ -435,13 +544,22 @@ def translate_txt_bytes(content, base_name, lang_from, lang_to,
         yield ("error", f"Не вдалось прочитати файл: {e}")
         return
 
+    max_chars = CFG.get("max_chars", 30000)
+    if len(text) > max_chars:
+        yield ("error",
+               f"Файл занадто великий: {len(text)} символів "
+               f"(максимум {max_chars})")
+        return
+
     chunks = split_chunks(text)
     total = len(chunks)
-    yield ("log", f"TXT: {total} частин")
+    yield ("log", f"TXT: {total} частин, {len(text)} символів")
 
     if total == 0:
         yield ("error", "Файл порожній")
         return
+
+    yield ("meta", {"chars": len(text), "pages": None})
 
     lang_to_code = LANG_MAP.get(lang_to, lang_to)
     lang_from_code = LANG_MAP.get(lang_from)
@@ -1057,6 +1175,38 @@ ADMIN_HTML = r"""<!DOCTYPE html>
   <div id="file-log" class="log-box" style="display:none;"></div>
 </div>
 
+<!-- Stats -->
+<div class="card">
+  <details id="stats-details">
+    <summary class="section-title" style="margin-bottom:0">&#128202; Статистика</summary>
+    <div style="margin-top:12px;">
+      <div id="stats-summary" style="display:grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap:10px; margin-bottom:14px;"></div>
+      <div style="overflow-x:auto;">
+        <table id="stats-table" style="width:100%; border-collapse: collapse; font-size: .82rem;">
+          <thead>
+            <tr style="background:#f1f5f9; text-align:left;">
+              <th style="padding:6px 8px; border-bottom:1px solid #e2e8f0;">Час</th>
+              <th style="padding:6px 8px; border-bottom:1px solid #e2e8f0;">IP</th>
+              <th style="padding:6px 8px; border-bottom:1px solid #e2e8f0;">Тип</th>
+              <th style="padding:6px 8px; border-bottom:1px solid #e2e8f0;">Файл</th>
+              <th style="padding:6px 8px; border-bottom:1px solid #e2e8f0;">Мови</th>
+              <th style="padding:6px 8px; border-bottom:1px solid #e2e8f0;">Симв.</th>
+              <th style="padding:6px 8px; border-bottom:1px solid #e2e8f0;">Стор.</th>
+              <th style="padding:6px 8px; border-bottom:1px solid #e2e8f0;">Час, с</th>
+              <th style="padding:6px 8px; border-bottom:1px solid #e2e8f0;">Статус</th>
+              <th style="padding:6px 8px; border-bottom:1px solid #e2e8f0;">Помилка</th>
+            </tr>
+          </thead>
+          <tbody id="stats-tbody"></tbody>
+        </table>
+      </div>
+      <div class="btn-row" style="margin-top:10px;">
+        <button onclick="loadStats()" style="background:#6b7280;">&#8635; Оновити</button>
+      </div>
+    </div>
+  </details>
+</div>
+
 <!-- Settings -->
 <div class="card">
   <details id="settings-details">
@@ -1081,6 +1231,14 @@ ADMIN_HTML = r"""<!DOCTYPE html>
       <div>
         <label>Розмір чанка (символів)</label>
         <input type="number" id="cfg_chunk_size" min="500" max="20000" step="100">
+      </div>
+      <div>
+        <label>Макс. сторінок PDF</label>
+        <input type="number" id="cfg_max_pdf_pages" min="1" max="500" step="1">
+      </div>
+      <div>
+        <label>Макс. символів (текст/DOCX/TXT)</label>
+        <input type="number" id="cfg_max_chars" min="1000" max="1000000" step="1000">
       </div>
       <div></div>
       <div class="full">
@@ -1111,6 +1269,8 @@ async function loadSettings() {
   document.getElementById('cfg_max_tokens').value      = cfg.max_tokens      ?? 2048;
   document.getElementById('cfg_llm_timeout').value     = cfg.llm_timeout     ?? 180;
   document.getElementById('cfg_chunk_size').value      = cfg.chunk_size      ?? 3000;
+  document.getElementById('cfg_max_pdf_pages').value   = cfg.max_pdf_pages   ?? 10;
+  document.getElementById('cfg_max_chars').value       = cfg.max_chars       ?? 30000;
   document.getElementById('cfg_system_msg').value      = cfg.system_msg      ?? '';
   document.getElementById('cfg_prompt_template').value = cfg.prompt_template ?? '';
   // populate per-request overrides with current defaults
@@ -1125,6 +1285,8 @@ async function saveSettings() {
     max_tokens:      parseInt(document.getElementById('cfg_max_tokens').value),
     llm_timeout:     parseInt(document.getElementById('cfg_llm_timeout').value),
     chunk_size:      parseInt(document.getElementById('cfg_chunk_size').value),
+    max_pdf_pages:   parseInt(document.getElementById('cfg_max_pdf_pages').value),
+    max_chars:       parseInt(document.getElementById('cfg_max_chars').value),
     system_msg:      document.getElementById('cfg_system_msg').value,
     prompt_template: document.getElementById('cfg_prompt_template').value,
   };
@@ -1146,6 +1308,8 @@ async function resetSettings() {
   document.getElementById('cfg_max_tokens').value      = cfg.max_tokens;
   document.getElementById('cfg_llm_timeout').value     = cfg.llm_timeout;
   document.getElementById('cfg_chunk_size').value      = cfg.chunk_size;
+  document.getElementById('cfg_max_pdf_pages').value   = cfg.max_pdf_pages;
+  document.getElementById('cfg_max_chars').value       = cfg.max_chars;
   document.getElementById('cfg_system_msg').value      = cfg.system_msg;
   document.getElementById('cfg_prompt_template').value = cfg.prompt_template;
 }
@@ -1403,6 +1567,57 @@ async function doTranslateFile() {
   setFileWorking(false); _fileController = null; _fileRequestId = null;
 }
 
+// ── Stats ─────────────────────────────────────────────────────────────
+async function loadStats() {
+  try {
+    const r = await fetch('/admin/stats?limit=100');
+    const d = await r.json();
+    const s = d.summary || {};
+    const cards = [
+      ['Всього', s.total ?? 0],
+      ['Успішно', s.success ?? 0],
+      ['Помилки', s.errors ?? 0],
+      ['Зупинено', s.stopped ?? 0],
+      ['Символів', s.total_chars ?? 0],
+      ['Сторінок', s.total_pages ?? 0],
+      ['Секунд', Math.round(s.total_seconds ?? 0)],
+    ];
+    document.getElementById('stats-summary').innerHTML = cards.map(([k, v]) =>
+      `<div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; padding:10px;">
+         <div style="font-size:.7rem; color:#64748b; text-transform:uppercase;">${k}</div>
+         <div style="font-size:1.2rem; font-weight:600; color:#1e293b; margin-top:2px;">${v}</div>
+       </div>`).join('');
+
+    const statusColor = {
+      success: '#16a34a', error: '#dc2626', stopped: '#f59e0b',
+    };
+    const rows = (d.recent || []).map(r => {
+      const t = (r.timestamp || '').replace('T', ' ').slice(5, 19);
+      const langs = `${r.lang_from || ''}→${r.lang_to || ''}`;
+      const color = statusColor[r.status] || '#64748b';
+      return `<tr>
+        <td style="padding:5px 8px; border-bottom:1px solid #f1f5f9;">${t}</td>
+        <td style="padding:5px 8px; border-bottom:1px solid #f1f5f9;">${r.ip || ''}</td>
+        <td style="padding:5px 8px; border-bottom:1px solid #f1f5f9;">${r.kind || ''}</td>
+        <td style="padding:5px 8px; border-bottom:1px solid #f1f5f9; max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${r.filename || ''}</td>
+        <td style="padding:5px 8px; border-bottom:1px solid #f1f5f9;">${langs}</td>
+        <td style="padding:5px 8px; border-bottom:1px solid #f1f5f9; text-align:right;">${r.chars ?? ''}</td>
+        <td style="padding:5px 8px; border-bottom:1px solid #f1f5f9; text-align:right;">${r.pages ?? ''}</td>
+        <td style="padding:5px 8px; border-bottom:1px solid #f1f5f9; text-align:right;">${r.duration ?? ''}</td>
+        <td style="padding:5px 8px; border-bottom:1px solid #f1f5f9; color:${color}; font-weight:500;">${r.status}</td>
+        <td style="padding:5px 8px; border-bottom:1px solid #f1f5f9; color:#dc2626; max-width:250px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${(r.error || '').replace(/"/g, '&quot;')}">${r.error || ''}</td>
+      </tr>`;
+    }).join('');
+    document.getElementById('stats-tbody').innerHTML = rows || '<tr><td colspan="10" style="padding:20px; text-align:center; color:#94a3b8;">Немає даних</td></tr>';
+  } catch (e) {
+    document.getElementById('stats-tbody').innerHTML = `<tr><td colspan="10" style="padding:10px; color:#dc2626;">Помилка: ${e}</td></tr>`;
+  }
+}
+
+document.getElementById('stats-details').addEventListener('toggle', e => {
+  if (e.target.open) loadStats();
+});
+
 // ── Init selects ──────────────────────────────────────────────────────
 async function initSelects() {
   const r = await fetch('/languages');
@@ -1442,6 +1657,14 @@ def index():
 @app.get("/admin", response_class=HTMLResponse)
 def admin():
     return ADMIN_HTML
+
+
+@app.get("/admin/stats")
+def admin_stats(limit: int = 100):
+    return JSONResponse({
+        "summary": get_stats_summary(),
+        "recent": get_recent_stats(limit),
+    })
 
 
 
@@ -1485,11 +1708,12 @@ def stop_translation(request_id: str):
 
 
 @app.post("/translate")
-def translate(req: TranslateRequest):
+def translate(req: TranslateRequest, request: Request):
     global _ticket_issued
     request_id = str(uuid.uuid4())
     stop_event = threading.Event()
     _active[request_id] = stop_event
+    client_ip = request.client.host if request.client else None
 
     start_evt = threading.Event()
     done_evt = threading.Event()
@@ -1499,18 +1723,34 @@ def translate(req: TranslateRequest):
     _job_queue.put((start_evt, done_evt))
 
     def generate():
-        def log(msg: str):
+        def log_event(msg: str):
             return f"data: {json.dumps({'type': 'log', 'text': msg})}\n\n"
 
         def ts():
             return datetime.datetime.now().strftime("%H:%M:%S")
 
+        started = time.time()
+        final_status = "error"
+        final_error = None
+
         try:
             yield f"data: {json.dumps({'type': 'id', 'text': request_id})}\n\n"
+
+            # Length check up front
+            max_chars = CFG.get("max_chars", 30000)
+            if len(req.text) > max_chars:
+                final_error = f"Text too long: {len(req.text)} > {max_chars}"
+                msg = (f"Текст занадто довгий: {len(req.text)} символів "
+                       f"(максимум {max_chars})")
+                yield log_event(f"[{ts()}] ERROR: {msg}")
+                yield f"data: {json.dumps({'type': 'error', 'text': msg})}\n\n"
+                yield f"data: {json.dumps({'type': 'done'})}\n\n"
+                return
 
             # Wait in queue until our turn
             while not start_evt.wait(timeout=2):
                 if stop_event.is_set():
+                    final_status = "stopped"
                     yield f"data: {json.dumps({'type': 'done'})}\n\n"
                     return
                 with _ticket_lock:
@@ -1524,10 +1764,10 @@ def translate(req: TranslateRequest):
             lang_from_code = LANG_MAP.get(req.lang_from)
             direction = f"from {lang_from_code} into {lang_to_code}" if lang_from_code else f"into {lang_to_code}"
 
-            yield log(f"[{ts()}] URL:   {CFG['base_url']}")
-            yield log(f"[{ts()}] Model: {CFG['model']}")
-            yield log(f"[{ts()}] Lang:  {direction}")
-            yield log(f"[{ts()}] Text:  {len(req.text)} chars")
+            yield log_event(f"[{ts()}] URL:   {CFG['base_url']}")
+            yield log_event(f"[{ts()}] Model: {CFG['model']}")
+            yield log_event(f"[{ts()}] Lang:  {direction}")
+            yield log_event(f"[{ts()}] Text:  {len(req.text)} chars")
 
             marked = req.text.replace("\r\n", "\n").replace("\n\n", "⟨P⟩").replace("\n", "⟨N⟩")
             tpl = req.prompt_template.strip() or CFG["prompt_template"]
@@ -1544,7 +1784,7 @@ def translate(req: TranslateRequest):
                 {"role": "user", "content": prompt},
             ]
 
-            yield log(f"[{ts()}] Sending request (streaming)...")
+            yield log_event(f"[{ts()}] Sending request (streaming)...")
 
             try:
                 resp = req_lib.post(
@@ -1554,13 +1794,14 @@ def translate(req: TranslateRequest):
                     timeout=CFG["llm_timeout"],
                     stream=True,
                 )
-                yield log(f"[{ts()}] HTTP {resp.status_code} — receiving tokens...")
+                yield log_event(f"[{ts()}] HTTP {resp.status_code} — receiving tokens...")
 
                 collected = []
                 for raw_line in resp.iter_lines():
                     if stop_event.is_set():
                         resp.close()
-                        yield log(f"[{ts()}] Stopped by user")
+                        final_status = "stopped"
+                        yield log_event(f"[{ts()}] Stopped by user")
                         yield f"data: {json.dumps({'type': 'done'})}\n\n"
                         return
                     if not raw_line:
@@ -1576,8 +1817,10 @@ def translate(req: TranslateRequest):
                     except json.JSONDecodeError:
                         continue
                     if "error" in chunk:
-                        yield log(f"[{ts()}] ERROR: {chunk['error']}")
-                        yield f"data: {json.dumps({'type': 'error', 'text': str(chunk['error'])})}\n\n"
+                        final_error = str(chunk['error'])
+                        log.error(f"LLM error: {chunk['error']}")
+                        yield log_event(f"[{ts()}] ERROR: {chunk['error']}")
+                        yield f"data: {json.dumps({'type': 'error', 'text': 'Помилка моделі перекладу'})}\n\n"
                         return
                     delta = chunk.get("choices", [{}])[0].get("delta", {})
                     thinking_token = delta.get("thinking", "")
@@ -1591,29 +1834,46 @@ def translate(req: TranslateRequest):
                 raw = "".join(collected).strip()
                 result = raw.split("§")[0].strip()
                 result = result.replace("⟨P⟩", "\n\n").replace("⟨N⟩", "\n")
-                yield log(f"[{ts()}] Done — {len(result)} chars (raw: {len(raw)})")
+                final_status = "success"
+                yield log_event(f"[{ts()}] Done — {len(result)} chars (raw: {len(raw)})")
                 yield f"data: {json.dumps({'type': 'result', 'text': result})}\n\n"
 
             except req_lib.exceptions.Timeout:
-                timeout_msg = f"Timeout after {CFG['llm_timeout']}s"
-                yield log(f"[{ts()}] ERROR: {timeout_msg}")
-                yield f"data: {json.dumps({'type': 'error', 'text': timeout_msg})}\n\n"
+                final_error = "Timeout"
+                log.error(f"Translation timeout after {CFG['llm_timeout']}s")
+                yield log_event(f"[{ts()}] ERROR: Timeout after {CFG['llm_timeout']}s")
+                yield f"data: {json.dumps({'type': 'error', 'text': 'Сервер не встиг відповісти. Спробуйте пізніше.'})}\n\n"
             except Exception as e:
-                import traceback
-                yield log(f"[{ts()}] ERROR: {e}")
-                yield log(traceback.format_exc())
-                yield f"data: {json.dumps({'type': 'error', 'text': str(e)})}\n\n"
+                final_error = str(e)
+                log.error(f"Translation error: {e}\n{traceback.format_exc()}")
+                yield log_event(f"[{ts()}] ERROR: {e}")
+                yield log_event(traceback.format_exc())
+                yield f"data: {json.dumps({'type': 'error', 'text': 'Помилка сервера. Деталі в адмін-логах.'})}\n\n"
 
             yield f"data: {json.dumps({'type': 'done'})}\n\n"
         finally:
             done_evt.set()
             _active.pop(request_id, None)
+            log_stat(
+                ip=client_ip,
+                kind="text",
+                filename=None,
+                file_ext=None,
+                lang_from=req.lang_from,
+                lang_to=req.lang_to,
+                chars=len(req.text),
+                pages=None,
+                duration=round(time.time() - started, 2),
+                status=final_status,
+                error=final_error,
+            )
 
     return StreamingResponse(generate(), media_type="text/event-stream")
 
 
 @app.post("/translate-file")
 async def translate_file_endpoint(
+    request: Request,
     file: UploadFile = File(...),
     lang_from: str = Form("auto"),
     lang_to: str = Form("Ukrainian"),
@@ -1625,6 +1885,7 @@ async def translate_file_endpoint(
     filename = file.filename or "file.txt"
     ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "txt"
     base = filename.rsplit(".", 1)[0] if "." in filename else filename
+    client_ip = request.client.host if request.client else None
 
     request_id = str(uuid.uuid4())
     stop_event = threading.Event()
@@ -1634,12 +1895,17 @@ async def translate_file_endpoint(
         def ts():
             return datetime.datetime.now().strftime("%H:%M:%S")
 
-        def log(msg: str):
+        def log_event(msg: str):
             return f"data: {json.dumps({'type': 'log', 'text': f'[{ts()}] {msg}'})}\n\n"
+
+        started = time.time()
+        meta = {"chars": None, "pages": None}
+        final_status = "error"
+        final_error = None
 
         try:
             yield f"data: {json.dumps({'type': 'id', 'text': request_id})}\n\n"
-            yield log(f"File: {filename} ({len(content)} bytes)")
+            yield log_event(f"File: {filename} ({len(content)} bytes)")
 
             tpl = prompt_template.strip() or CFG["prompt_template"]
             ctx = context.strip() or "document"
@@ -1659,38 +1925,60 @@ async def translate_file_endpoint(
                 for event in it:
                     kind = event[0]
                     if kind == "log":
-                        yield log(event[1])
+                        yield log_event(event[1])
+                    elif kind == "meta":
+                        meta.update(event[1])
                     elif kind == "progress":
                         yield f"data: {json.dumps({'type': 'progress', 'text': event[1], 'pct': event[2]})}\n\n"
                     elif kind == "error":
-                        yield log(f"ERROR: {event[1]}")
+                        final_error = event[1]
+                        log.warning(f"[{filename}] {event[1]}")
+                        yield log_event(f"ERROR: {event[1]}")
                         yield f"data: {json.dumps({'type': 'error', 'text': event[1]})}\n\n"
                         return
                     elif kind == "stopped":
-                        yield log("Зупинено користувачем")
+                        final_status = "stopped"
+                        yield log_event("Зупинено користувачем")
                         yield f"data: {json.dumps({'type': 'done'})}\n\n"
                         return
                     elif kind == "done":
                         _, out_filename, mime, data = event
                         file_id = str(uuid.uuid4())
                         _results[file_id] = (out_filename, data, mime)
-                        yield log(f"Готово — {len(data)} bytes")
+                        final_status = "success"
+                        yield log_event(f"Готово — {len(data)} bytes")
                         yield f"data: {json.dumps({'type': 'download', 'url': f'/download/{file_id}', 'filename': out_filename})}\n\n"
                         yield f"data: {json.dumps({'type': 'done'})}\n\n"
                         return
             except req_lib.exceptions.Timeout:
-                yield log("ERROR: Timeout")
-                yield f"data: {json.dumps({'type': 'error', 'text': 'Timeout під час перекладу'})}\n\n"
+                final_error = "Timeout від сервера перекладу"
+                log.error(f"[{filename}] Timeout")
+                yield log_event("ERROR: Timeout")
+                yield f"data: {json.dumps({'type': 'error', 'text': 'Сервер не встиг відповісти. Спробуйте пізніше.'})}\n\n"
                 return
             except Exception as e:
-                import traceback
-                yield log(f"ERROR: {e}")
-                yield log(traceback.format_exc())
-                yield f"data: {json.dumps({'type': 'error', 'text': str(e)})}\n\n"
+                final_error = str(e)
+                log.error(f"[{filename}] {e}\n{traceback.format_exc()}")
+                yield log_event(f"ERROR: {e}")
+                yield log_event(traceback.format_exc())
+                yield f"data: {json.dumps({'type': 'error', 'text': 'Помилка сервера. Деталі в адмін-логах.'})}\n\n"
                 return
 
         finally:
             _active.pop(request_id, None)
+            log_stat(
+                ip=client_ip,
+                kind="file",
+                filename=filename,
+                file_ext=ext,
+                lang_from=lang_from,
+                lang_to=lang_to,
+                chars=meta.get("chars"),
+                pages=meta.get("pages"),
+                duration=round(time.time() - started, 2),
+                status=final_status,
+                error=final_error,
+            )
 
     return StreamingResponse(generate(), media_type="text/event-stream")
 
