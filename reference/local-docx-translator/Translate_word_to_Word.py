@@ -1,0 +1,1130 @@
+import os
+import sys
+import json
+import tempfile
+import atexit
+import datetime
+import threading
+import queue
+
+# Bypass corporate proxy BEFORE any other imports
+os.environ["NO_PROXY"] = "localhost,127.0.0.1"
+os.environ["no_proxy"] = "localhost,127.0.0.1"
+os.environ["HTTP_PROXY"] = ""
+os.environ["HTTPS_PROXY"] = ""
+os.environ["http_proxy"] = ""
+os.environ["https_proxy"] = ""
+
+import ollama
+import tkinter as tk
+from tkinter import filedialog, messagebox
+from docx import Document
+from docx.shared import Pt
+import customtkinter as ctk
+
+VERSION = "3.12.0"
+AUTHOR = "Роман Гавриш (Coyotl)"
+
+_EMBEDDED_THEME = {
+    "CTk":                {"fg_color": ["gray92", "gray14"]},
+    "CTkToplevel":        {"fg_color": ["gray92", "gray14"]},
+    "CTkFrame": {
+        "corner_radius": 6, "border_width": 0,
+        "fg_color": ["gray86", "gray17"], "top_fg_color": ["gray81", "gray20"], "border_color": ["gray65", "gray28"],
+    },
+    "CTkButton": {
+        "corner_radius": 6, "border_width": 0,
+        "fg_color": ["#A0845C", "#1F6AA5"], "hover_color": ["#8A6E4A", "#144870"],
+        "border_color": ["#3E454A", "#949A9F"], "text_color": ["#F5EFE6", "#DCE4EE"], "text_color_disabled": ["gray74", "gray60"],
+    },
+    "CTkLabel": {
+        "corner_radius": 0,
+        "fg_color": "transparent", "text_color": ["gray14", "gray84"],
+    },
+    "CTkEntry": {
+        "corner_radius": 6, "border_width": 2,
+        "fg_color": ["#F9F5F0", "#343638"], "border_color": ["#C4A882", "#565B5E"],
+        "text_color": ["gray14", "gray84"], "placeholder_text_color": ["gray52", "gray62"],
+    },
+    "CTkCheckBox": {
+        "corner_radius": 6, "border_width": 3, "checkbox_width": 20, "checkbox_height": 20,
+        "fg_color": ["#A0845C", "#1F6AA5"], "border_color": ["#A0845C", "#565B5E"],
+        "hover_color": ["#8A6E4A", "#144870"], "checkmark_color": ["#F5EFE6", "#DCE4EE"],
+        "text_color": ["gray14", "gray84"], "text_color_disabled": ["gray60", "gray45"],
+    },
+    "CTkSwitch": {
+        "corner_radius": 1000, "border_width": 3, "button_length": 0,
+        "fg_color": ["#C4A882", "#4A4D50"], "progress_color": ["#A0845C", "#1F6AA5"],
+        "button_color": ["gray36", "gray85"], "button_hover_color": ["gray20", "gray100"],
+        "text_color": ["gray14", "gray84"], "text_color_disabled": ["gray60", "gray45"],
+    },
+    "CTkRadioButton": {
+        "corner_radius": 1000, "border_width_checked": 6, "border_width_unchecked": 3,
+        "radiobutton_width": 20, "radiobutton_height": 20,
+        "fg_color": ["#A0845C", "#1F6AA5"], "border_color": ["#A0845C", "#565B5E"],
+        "hover_color": ["#8A6E4A", "#144870"], "text_color": ["gray14", "gray84"], "text_color_disabled": ["gray60", "gray45"],
+    },
+    "CTkProgressBar": {
+        "corner_radius": 1000, "border_width": 0, "height": 12,
+        "fg_color": ["#D8C9B8", "#4A4D50"], "progress_color": ["#A0845C", "#1F6AA5"], "border_color": ["gray", "gray"],
+    },
+    "CTkSlider": {
+        "corner_radius": 1000, "button_corner_radius": 1000, "border_width": 6, "button_length": 0, "height": 16,
+        "fg_color": ["#D8C9B8", "#4A4D50"], "progress_color": ["#A0845C", "#1F6AA5"],
+        "button_color": ["#A0845C", "#1F6AA5"], "button_hover_color": ["#8A6E4A", "#144870"],
+    },
+    "CTkOptionMenu": {
+        "corner_radius": 6, "dynamic_resizing": True,
+        "fg_color": ["#A0845C", "#1F6AA5"], "button_color": ["#8A6E4A", "#144870"],
+        "button_hover_color": ["#74583A", "#0D3A5C"], "text_color": ["#F5EFE6", "#DCE4EE"], "text_color_disabled": ["gray74", "gray60"],
+    },
+    "CTkComboBox": {
+        "corner_radius": 6, "border_width": 2,
+        "fg_color": ["#F9F5F0", "#343638"], "border_color": ["#C4A882", "#565B5E"],
+        "button_color": ["#C4A882", "#565B5E"], "button_hover_color": ["#A0845C", "#1F6AA5"],
+        "text_color": ["gray14", "gray84"], "text_color_disabled": ["gray74", "gray60"],
+    },
+    "CTkScrollbar": {
+        "corner_radius": 1000, "border_spacing": 4, "minimum_pixel_length": 20,
+        "fg_color": "transparent", "button_color": ["#C4A882", "#565B5E"], "button_hover_color": ["#A0845C", "#1F6AA5"],
+    },
+    "CTkSegmentedButton": {
+        "corner_radius": 6, "border_width": 2,
+        "fg_color": ["#D8C9B8", "#3B3B3B"], "selected_color": ["#A0845C", "#1F6AA5"],
+        "selected_hover_color": ["#8A6E4A", "#144870"], "unselected_color": ["#D8C9B8", "#3B3B3B"],
+        "unselected_hover_color": ["#C4A882", "#41414A"], "text_color": ["gray14", "gray84"], "text_color_disabled": ["gray74", "gray60"],
+    },
+    "CTkTextbox": {
+        "corner_radius": 6, "border_width": 2, "border_spacing": 3, "scrollbar_button_corner_radius": 1000,
+        "fg_color": ["#F9F5F0", "#343638"], "border_color": ["#C4A882", "#565B5E"],
+        "text_color": ["gray14", "gray84"], "scrollbar_button_color": ["#C4A882", "#565B5E"],
+        "scrollbar_button_hover_color": ["#A0845C", "#1F6AA5"],
+    },
+    "CTkScrollableFrame": {
+        "corner_radius": 6, "border_width": 0,
+        "label_fg_color": ["#D8C9B8", "gray21"],
+    },
+    "DropdownMenu": {"fg_color": ["#F9F5F0", "gray17"], "hover_color": ["#E8DDD0", "gray28"], "text_color": ["gray14", "gray84"]},
+    "CTkFont": {
+        "macOS":   {"family": "SF Display",  "size": 13, "weight": "normal"},
+        "Windows": {"family": "Segoe UI",    "size": 13, "weight": "normal"},
+        "Linux":   {"family": "Roboto",      "size": 13, "weight": "normal"},
+    },
+}
+
+def _load_embedded_theme():
+    tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8")
+    json.dump(_EMBEDDED_THEME, tmp)
+    tmp.close()
+    atexit.register(os.unlink, tmp.name)
+    return tmp.name
+
+ABOUT_TEXT = """\
+Перекладач АПІ — локальний інструмент для перекладу \
+документів і тексту за допомогою AI-моделей через сервер Ollama.
+
+Усі переклади виконуються локально — дані не передаються \
+до хмарних сервісів, що забезпечує повну конфіденційність.
+
+Можливості:
+  •  Переклад DOCX-документів зі збереженням форматування
+  •  Швидкий переклад довільного тексту в окремому вікні
+  •  Підтримка 150+ мов (залежно від обраної моделі)
+  •  Гнучке налаштування адреси сервера Ollama
+
+Як працює:
+Програма підключається до локального сервера Ollama та надсилає \
+текст обраній мовній моделі. Документи обробляються на рівні \
+окремих текстових фрагментів (runs) зі збереженням оригінального \
+форматування Word.\
+"""
+DEFAULT_OLLAMA_HOST = "http://127.0.0.1:11434"
+
+POPULAR_LANGUAGES = [
+    "Українська", "Англійська", "Німецька", "Іспанська", "Французька",
+    "Польська", "Італійська", "Португальська", "Російська", "Чеська",
+    "Румунська", "Болгарська", "Угорська", "Словацька", "Сербська", "Хорватська",
+]
+
+LANG_UK_TO_EN = {
+    "Українська": "Ukrainian", "Англійська": "English", "Німецька": "German",
+    "Іспанська": "Spanish", "Французька": "French", "Польська": "Polish",
+    "Італійська": "Italian", "Португальська": "Portuguese", "Російська": "Russian",
+    "Чеська": "Czech", "Румунська": "Romanian", "Болгарська": "Bulgarian",
+    "Угорська": "Hungarian", "Словацька": "Slovak", "Сербська": "Serbian",
+    "Хорватська": "Croatian",
+}
+
+ALL_LANGUAGES = [
+    "Abkhazian", "Afar", "Afrikaans", "Akan", "Albanian", "Amharic", "Arabic",
+    "Aragonese", "Armenian", "Assamese", "Azerbaijani", "Bambara", "Bashkir",
+    "Basque", "Belarusian", "Bengali", "Bosnian", "Breton", "Bulgarian",
+    "Burmese", "Catalan", "Central Khmer", "Chechen", "Chichewa", "Chinese",
+    "Chuvash", "Cornish", "Corsican", "Croatian", "Czech", "Danish", "Divehi",
+    "Dutch", "Dzongkha", "English", "Esperanto", "Estonian", "Ewe", "Faroese",
+    "Filipino", "Finnish", "French", "Fulah", "Galician", "Georgian", "German",
+    "Greek", "Guarani", "Gujarati", "Ganda", "Haitian", "Hausa", "Hebrew",
+    "Hindi", "Hungarian", "Icelandic", "Ido", "Igbo", "Indonesian", "Interlingua",
+    "Interlingue", "Inuktitut", "Inupiaq", "Irish", "Italian", "Japanese",
+    "Javanese", "Kannada", "Kashmiri", "Kazakh", "Kikuyu", "Kinyarwanda",
+    "Korean", "Kurdish", "Kyrgyz", "Kalaallisut", "Lao", "Latin", "Latvian",
+    "Lingala", "Lithuanian", "Luba-Katanga", "Luxembourgish", "Macedonian",
+    "Malagasy", "Malay", "Malayalam", "Maltese", "Manx", "Maori", "Marathi",
+    "Mongolian", "Navajo", "Nepali", "North Ndebele", "Northern Sami",
+    "Norwegian", "Norwegian Bokmål", "Norwegian Nynorsk", "Occitan", "Oriya",
+    "Oromo", "Ossetian", "Pashto", "Persian", "Polish", "Portuguese", "Punjabi",
+    "Quechua", "Romanian", "Romansh", "Rundi", "Russian", "Sango", "Sanskrit",
+    "Sardinian", "Scottish Gaelic", "Serbian", "Shona", "Sichuan Yi", "Sindhi",
+    "Sinhala", "Slovak", "Slovenian", "Somali", "South Ndebele", "Southern Sotho",
+    "Spanish", "Sundanese", "Swahili", "Swati", "Swedish", "Tagalog", "Tamil",
+    "Tatar", "Telugu", "Tibetan", "Tigrinya", "Tonga", "Tswana", "Tsonga",
+    "Turkish", "Turkmen", "Uyghur", "Ukrainian", "Urdu", "Uzbek", "Venda",
+    "Vietnamese", "Volapük", "Walloon", "Welsh", "Western Frisian", "Wolof",
+    "Xhosa", "Yiddish", "Yoruba", "Zhuang", "Zulu",
+]
+
+if getattr(sys, 'frozen', False):
+    _app_dir = os.path.dirname(sys.executable)
+else:
+    _app_dir = os.path.dirname(os.path.abspath(__file__))
+
+
+_log_name = f"log_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+_log_path = os.path.join(_app_dir, _log_name)
+_log_file = None
+_logging_enabled = False
+
+
+def log_file(msg):
+    global _log_file
+    if not _logging_enabled:
+        return
+    if _log_file is None:
+        _log_file = open(_log_path, "w", encoding="utf-8")
+    _log_file.write(msg + "\n")
+    _log_file.flush()
+
+
+# ── Translation logic ─────────────────────────────────────────────────────────
+
+def translate_text(text, target_lang, model_name, host):
+    if not text.strip() or len(text) < 2:
+        return text
+    prompt = (
+        f"Translate the following text to {target_lang}. "
+        f"Preserve the meaning and tone. Output ONLY the translation:\n\n{text}"
+    )
+    try:
+        client = ollama.Client(host=host)
+        response = client.generate(model=model_name, prompt=prompt)
+        return response['response'].strip()
+    except Exception as e:
+        log_file(f"  [ERROR] {e}")
+        return text
+
+
+def run_translation_pdf(input_path, target_lang, model_name, host, msg_queue, stop_event):
+    try:
+        import fitz
+    except ImportError:
+        msg_queue.put(("error", "Бібліотека PyMuPDF не встановлена.\nВстановіть: pip install pymupdf"))
+        return
+    try:
+        source_dir = os.path.dirname(input_path)
+        filename = os.path.basename(input_path)
+        output_path = os.path.join(source_dir, f"TR_{target_lang}_{filename}")
+
+        msg_queue.put(("log", f"Відкриваю PDF: {filename}"))
+        log_file(f"[FILE] {input_path}")
+
+        doc = fitz.open(input_path)
+        total_pages = len(doc)
+        msg_queue.put(("log", f"Сторінок: {total_pages}"))
+        msg_queue.put(("total", total_pages))
+
+        for page_num in range(total_pages):
+            if stop_event.is_set():
+                msg_queue.put(("log", "⛔ Зупинено користувачем"))
+                msg_queue.put(("stopped", None))
+                doc.close()
+                return
+
+            msg_queue.put(("log", f"[{page_num + 1}/{total_pages}] Обробка сторінки..."))
+            page = doc[page_num]
+
+            # Collect text blocks with positions
+            raw = page.get_text("dict", flags=fitz.TEXT_PRESERVE_WHITESPACE)
+            blocks = [b for b in raw["blocks"] if b["type"] == 0]
+
+            # Build list of (bbox, text, fontsize, color) per block
+            items = []
+            for block in blocks:
+                lines_text = []
+                fontsize = 11
+                color = 0
+                for line in block["lines"]:
+                    for span in line["spans"]:
+                        if span["text"].strip():
+                            lines_text.append(span["text"])
+                            fontsize = span["size"]
+                            color = span["color"]
+                full_text = " ".join(lines_text).strip()
+                if full_text:
+                    items.append((fitz.Rect(block["bbox"]), full_text, fontsize, color))
+
+            if not items:
+                msg_queue.put(("progress", page_num + 1))
+                continue
+
+            # Redact all original text blocks at once
+            for rect, _, _, _ in items:
+                page.add_redact_annot(rect, fill=(1, 1, 1))
+            page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE)
+
+            # Insert translated text into each block area
+            for rect, text, fontsize, color_int in items:
+                if stop_event.is_set():
+                    break
+                translated = translate_text(text, target_lang, model_name, host)
+                log_file(f"  [PDF p{page_num+1}] {repr(text[:60])} → {repr(translated[:60])}")
+
+                # Unpack integer color to RGB floats
+                r = ((color_int >> 16) & 0xFF) / 255
+                g = ((color_int >> 8) & 0xFF) / 255
+                b = (color_int & 0xFF) / 255
+
+                # Insert text fitting inside the original block rect
+                page.insert_textbox(
+                    rect, translated,
+                    fontsize=max(fontsize - 0.5, 6),
+                    color=(r, g, b),
+                    align=0,
+                    overflow="ignore",
+                )
+
+            msg_queue.put(("progress", page_num + 1))
+
+        doc.save(output_path, garbage=4, deflate=True)
+        doc.close()
+        log_file(f"[FILE] Saved: {output_path}")
+        msg_queue.put(("log", f"✓ Збережено → TR_{target_lang}_{filename}"))
+        msg_queue.put(("done", output_path))
+
+    except Exception as e:
+        log_file(f"[ERROR] {e}")
+        msg_queue.put(("error", str(e)))
+
+
+def run_translation(input_path, target_lang, model_name, host, msg_queue, stop_event):
+    try:
+        source_dir = os.path.dirname(input_path)
+        filename = os.path.basename(input_path)
+        output_path = os.path.join(source_dir, f"TR_{target_lang}_{filename}")
+
+        msg_queue.put(("log", f"Відкриваю: {filename}"))
+        log_file(f"[FILE] {input_path}")
+
+        doc = Document(input_path)
+        all_paras = list(doc.paragraphs)
+        for table in doc.tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    all_paras.extend(cell.paragraphs)
+
+        translatable = [
+            run
+            for para in all_paras
+            for run in para.runs
+            if run.text.strip() and len(run.text.strip()) >= 2
+        ]
+        total = len(translatable)
+        msg_queue.put(("log", f"Знайдено {total} текстових фрагментів"))
+        msg_queue.put(("total", total))
+
+        for idx, run in enumerate(translatable, 1):
+            if stop_event.is_set():
+                msg_queue.put(("log", "⛔ Зупинено користувачем"))
+                msg_queue.put(("stopped", None))
+                return
+
+            original = run.text.strip()
+            preview = original[:50] + ("..." if len(original) > 50 else "")
+            msg_queue.put(("log", f"[{idx}/{total}] {preview}"))
+            log_file(f"  [RUN {idx}] {repr(original[:80])}")
+
+            translated = translate_text(original, target_lang, model_name, host)
+            log_file(f"  [OUT]  {repr(translated[:80])}")
+
+            if len(translated) > len(original) * 1.3 and run.font.size:
+                try:
+                    old_pt = run.font.size.pt
+                    run.font.size = Pt(old_pt - 1)
+                    log_file(f"  [FONT] {old_pt}pt → {old_pt - 1}pt")
+                except Exception:
+                    pass
+
+            run.text = translated
+            msg_queue.put(("progress", idx))
+
+        doc.save(output_path)
+        log_file(f"[FILE] Saved: {output_path}")
+        msg_queue.put(("log", f"✓ Збережено → TR_{target_lang}_{filename}"))
+        msg_queue.put(("done", output_path))
+
+    except Exception as e:
+        log_file(f"[ERROR] {e}")
+        msg_queue.put(("error", str(e)))
+
+
+# ── All Languages Dialog ──────────────────────────────────────────────────────
+
+class AllLanguagesDialog(ctk.CTkToplevel):
+    def __init__(self, parent, on_select):
+        super().__init__(parent)
+        self.on_select = on_select
+        self.title("Всі підтримувані мови")
+        self.geometry("360x520")
+        self.resizable(False, True)
+        self.grab_set()
+        self.lift()
+        self.focus_force()
+
+        ctk.CTkLabel(self, text="Пошук:", anchor="w").pack(fill="x", padx=12, pady=(12, 4))
+        self._search_var = ctk.StringVar()
+        self._search_var.trace_add("write", self._on_search)
+        ctk.CTkEntry(self, textvariable=self._search_var,
+                     placeholder_text="Введіть назву мови...").pack(fill="x", padx=12, pady=(0, 8))
+
+        self._list_frame = ctk.CTkScrollableFrame(self, height=380)
+        self._list_frame.pack(fill="both", expand=True, padx=12, pady=(0, 8))
+
+        ctk.CTkButton(self, text="Скасувати", fg_color="gray40",
+                      command=self.destroy).pack(pady=(0, 12))
+
+        self._render_list(ALL_LANGUAGES)
+
+    def _on_search(self, *_):
+        q = self._search_var.get().lower()
+        self._render_list([l for l in ALL_LANGUAGES if q in l.lower()])
+
+    def _render_list(self, langs):
+        for w in self._list_frame.winfo_children():
+            w.destroy()
+        for lang in langs:
+            ctk.CTkButton(
+                self._list_frame, text=lang, anchor="w",
+                fg_color="transparent", hover_color=("gray75", "gray30"),
+                text_color=("gray10", "gray90"),
+                command=lambda l=lang: self._pick(l),
+            ).pack(fill="x", pady=1)
+
+    def _pick(self, lang):
+        self.on_select(lang)
+        self.destroy()
+
+
+# ── About Dialog ─────────────────────────────────────────────────────────────
+
+class AboutDialog(ctk.CTkToplevel):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.title("Про програму")
+        self.geometry("480x420")
+        self.resizable(False, False)
+        self.grab_set()
+        self.lift()
+        self.focus_force()
+
+        # Title
+        ctk.CTkLabel(
+            self, text="Перекладач АПІ",
+            font=ctk.CTkFont(size=20, weight="bold"),
+        ).pack(pady=(20, 2))
+        ctk.CTkLabel(
+            self, text=f"Версія {VERSION}",
+            font=ctk.CTkFont(size=12), text_color="gray",
+        ).pack(pady=(0, 4))
+
+        ctk.CTkFrame(self, height=1, fg_color=("gray75", "gray30")).pack(fill="x", padx=20, pady=(4, 12))
+
+        # Description
+        box = ctk.CTkTextbox(
+            self, font=ctk.CTkFont(size=13), wrap="word",
+            fg_color=("gray88", "gray17"), corner_radius=8,
+            height=240, state="normal",
+        )
+        box.pack(fill="x", padx=20, pady=(0, 12))
+        box.insert("1.0", ABOUT_TEXT)
+        box.configure(state="disabled")
+
+        ctk.CTkFrame(self, height=1, fg_color=("gray75", "gray30")).pack(fill="x", padx=20, pady=(0, 10))
+
+        # Author + close
+        footer = ctk.CTkFrame(self, fg_color="transparent")
+        footer.pack(fill="x", padx=20, pady=(0, 16))
+        ctk.CTkLabel(
+            footer, text=f"Автор: {AUTHOR}",
+            font=ctk.CTkFont(size=12), text_color="gray", anchor="w",
+        ).pack(side="left")
+        ctk.CTkButton(
+            footer, text="Закрити", width=90,
+            command=self.destroy,
+        ).pack(side="right")
+
+
+# ── Quick Translate Window ───────────────────────────────────────────────────
+
+class QuickTranslateWindow(ctk.CTkToplevel):
+    def __init__(self, parent, get_model, get_host):
+        super().__init__(parent)
+        self._get_model = get_model
+        self._get_host = get_host
+        self._translating = False
+
+        self.title("Швидкий переклад")
+        self.geometry("780x440")
+        self.resizable(True, True)
+        self.minsize(600, 360)
+        self.lift()
+        self.focus_force()
+
+        self._build_ui()
+
+    def _build_ui(self):
+        # ── Top bar: lang selector + translate button ──
+        top = ctk.CTkFrame(self, fg_color="transparent")
+        top.pack(fill="x", padx=14, pady=(12, 6))
+
+        ctk.CTkLabel(top, text="Мова перекладу:", anchor="w").pack(side="left", padx=(0, 8))
+        self._lang_var = ctk.StringVar(value=POPULAR_LANGUAGES[0])
+        self._lang_menu = ctk.CTkOptionMenu(
+            top, variable=self._lang_var, values=POPULAR_LANGUAGES, width=200,
+        )
+        self._lang_menu.pack(side="left", padx=(0, 8))
+        ctk.CTkButton(top, text="Всі мови...", width=100,
+                      command=self._open_all_langs).pack(side="left", padx=(0, 16))
+
+        self._translate_btn = ctk.CTkButton(
+            top, text="Перекласти  →", width=150, height=32,
+            font=ctk.CTkFont(size=13, weight="bold"),
+            command=self._translate,
+        )
+        self._translate_btn.pack(side="right")
+
+        # ── Two columns ──
+        cols = ctk.CTkFrame(self, fg_color="transparent")
+        cols.pack(fill="both", expand=True, padx=14, pady=(0, 6))
+        cols.columnconfigure(0, weight=1)
+        cols.columnconfigure(1, weight=1)
+        cols.rowconfigure(0, weight=1)
+
+        # Left — input
+        left = ctk.CTkFrame(cols, fg_color=("gray88", "gray17"), corner_radius=8)
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
+        left.rowconfigure(1, weight=1)
+        left.columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(left, text="Оригінал", font=ctk.CTkFont(size=12),
+                     text_color="gray").grid(row=0, column=0, sticky="w", padx=10, pady=(8, 2))
+        self._input_box = ctk.CTkTextbox(
+            left, font=ctk.CTkFont(size=13), wrap="word", fg_color="transparent",
+        )
+        self._input_box.grid(row=1, column=0, sticky="nsew", padx=6, pady=(0, 6))
+        self._attach_context_menu(self._input_box, readonly=False)
+
+        ctk.CTkButton(
+            left, text="Очистити", width=90, height=26,
+            fg_color="gray40", hover_color="gray30",
+            command=lambda: self._input_box.delete("1.0", "end"),
+        ).grid(row=2, column=0, sticky="e", padx=10, pady=(0, 8))
+
+        # Right — output
+        right = ctk.CTkFrame(cols, fg_color=("gray88", "gray17"), corner_radius=8)
+        right.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
+        right.rowconfigure(1, weight=1)
+        right.columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(right, text="Переклад", font=ctk.CTkFont(size=12),
+                     text_color="gray").grid(row=0, column=0, sticky="w", padx=10, pady=(8, 2))
+        self._output_box = ctk.CTkTextbox(
+            right, font=ctk.CTkFont(size=13), wrap="word",
+            fg_color="transparent", state="disabled",
+        )
+        self._output_box.grid(row=1, column=0, sticky="nsew", padx=6, pady=(0, 6))
+        self._attach_context_menu(self._output_box, readonly=True)
+
+        btn_row = ctk.CTkFrame(right, fg_color="transparent")
+        btn_row.grid(row=2, column=0, sticky="e", padx=10, pady=(0, 8))
+        ctk.CTkButton(
+            btn_row, text="Копіювати", width=90, height=26,
+            fg_color="gray40", hover_color="gray30",
+            command=self._copy_result,
+        ).pack(side="left", padx=(0, 6))
+        ctk.CTkButton(
+            btn_row, text="⟳", width=36, height=26,
+            fg_color="gray40", hover_color="gray30",
+            command=self._translate,
+        ).pack(side="left")
+
+        # ── Status ──
+        self._status_label = ctk.CTkLabel(
+            self, text="", font=ctk.CTkFont(size=11), text_color="gray",
+        )
+        self._status_label.pack(pady=(0, 8))
+
+    def _attach_context_menu(self, textbox, readonly=False):
+        w = textbox._textbox
+
+        menu = tk.Menu(self, tearoff=0)
+        if not readonly:
+            menu.add_command(label="Вирізати",    command=lambda: w.event_generate("<<Cut>>"))
+        menu.add_command(    label="Копіювати",   command=lambda: w.event_generate("<<Copy>>"))
+        if not readonly:
+            menu.add_command(label="Вставити",    command=lambda: w.event_generate("<<Paste>>"))
+            menu.add_command(label="Видалити",    command=lambda: w.delete("sel.first", "sel.last") if w.tag_ranges("sel") else None)
+            menu.add_separator()
+            menu.add_command(label="Вибрати все", command=lambda: (w.tag_add("sel", "1.0", "end"), w.mark_set("insert", "end")))
+        else:
+            menu.add_separator()
+            menu.add_command(label="Вибрати все", command=lambda: (w.tag_add("sel", "1.0", "end"), w.mark_set("insert", "end")))
+
+        def show(event):
+            try:
+                menu.tk_popup(event.x_root, event.y_root)
+            finally:
+                menu.grab_release()
+
+        w.bind("<Button-3>", show)
+
+        if not readonly:
+            # Fix paste for non-Latin keyboard layouts (e.g. Ukrainian)
+            w.bind("<Control-v>", lambda e: (w.event_generate("<<Paste>>"), "break"))
+            w.bind("<Control-V>", lambda e: (w.event_generate("<<Paste>>"), "break"))
+
+    def _open_all_langs(self):
+        def set_lang(lang):
+            values = list(self._lang_menu.cget("values"))
+            if lang not in values:
+                values = [v for v in values if v in POPULAR_LANGUAGES]
+                values.append(lang)
+                self._lang_menu.configure(values=values)
+            self._lang_var.set(lang)
+        AllLanguagesDialog(self, set_lang)
+
+    def _translate(self):
+        if self._translating:
+            return
+        text = self._input_box.get("1.0", "end").strip()
+        if not text:
+            return
+
+        model = self._get_model()
+        if model in ("Завантаження...", "Підключення...", "— немає з'єднання —"):
+            self._status_label.configure(text="Модель недоступна — перевірте підключення до Ollama")
+            return
+
+        lang_raw = self._lang_var.get()
+        target_lang = LANG_UK_TO_EN.get(lang_raw, lang_raw)
+
+        self._translating = True
+        self._translate_btn.configure(state="disabled", text="Перекладаю...")
+        self._status_label.configure(text="")
+
+        self._output_box.configure(state="normal")
+        self._output_box.delete("1.0", "end")
+        self._output_box.configure(state="disabled")
+
+        def worker():
+            try:
+                result = translate_text(text, target_lang, model, self._get_host())
+                self.after(0, lambda: self._show_result(result))
+            except Exception as e:
+                self.after(0, lambda: self._show_error(str(e)))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _show_result(self, result):
+        self._output_box.configure(state="normal")
+        self._output_box.insert("1.0", result)
+        self._output_box.configure(state="disabled")
+        self._translate_btn.configure(state="normal", text="Перекласти  →")
+        char_count = len(result)
+        self._status_label.configure(text=f"{char_count} символів")
+        self._translating = False
+
+    def _show_error(self, err):
+        self._status_label.configure(text=f"Помилка: {err}")
+        self._translate_btn.configure(state="normal", text="Перекласти  →")
+        self._translating = False
+
+    def _copy_result(self):
+        text = self._output_box.get("1.0", "end").strip()
+        if text:
+            self.clipboard_clear()
+            self.clipboard_append(text)
+            self._status_label.configure(text="Скопійовано!")
+            self.after(2000, lambda: self._status_label.configure(text=""))
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _divider(parent):
+    """Thin horizontal separator line."""
+    ctk.CTkFrame(parent, height=1, fg_color=("gray75", "gray30")).pack(
+        fill="x", padx=16, pady=(8, 4)
+    )
+
+
+def _section_header(parent, text_var_holder, text, command):
+    """Collapsible section header row, returns the button widget."""
+    row = ctk.CTkFrame(parent, fg_color="transparent")
+    row.pack(fill="x", padx=16, pady=(4, 2))
+    btn = ctk.CTkButton(
+        row, text=text, anchor="w",
+        fg_color="transparent", hover_color=("gray82", "gray25"),
+        font=ctk.CTkFont(size=12, weight="bold"),
+        text_color=("gray35", "gray65"),
+        command=command,
+    )
+    btn.pack(side="left")
+    return row, btn
+
+
+# ── Main App ──────────────────────────────────────────────────────────────────
+
+class App(ctk.CTk):
+    def __init__(self):
+        super().__init__()
+
+        ctk.set_appearance_mode("dark")
+        ctk.set_default_color_theme(_load_embedded_theme())
+
+        self.title(f"Перекладач АПІ  v{VERSION}")
+        self.resizable(False, False)
+
+        self._msg_queue = queue.Queue()
+        self._total_runs = 0
+        self._worker = None
+        self._stop_event = threading.Event()
+        self._selected_lang = POPULAR_LANGUAGES[0]
+        self._log_visible = True
+        self._server_visible = False
+
+        self._build_ui()
+        self._refresh_models()
+
+    # ── UI build ──────────────────────────────────────────────────────────────
+
+    def _build_ui(self):
+        W = 600  # content width
+
+        # ── Header ──────────────────────────────────────────────────────────
+        header = ctk.CTkFrame(self, fg_color="transparent")
+        header.pack(fill="x", padx=16, pady=(14, 6))
+
+        ctk.CTkLabel(
+            header, text=f"Перекладач АПІ",
+            font=ctk.CTkFont(size=19, weight="bold"),
+        ).pack(side="left")
+        ctk.CTkLabel(
+            header, text=f"v{VERSION}",
+            font=ctk.CTkFont(size=13), text_color="gray",
+        ).pack(side="left", padx=(6, 0))
+
+        theme_frame = ctk.CTkFrame(header, fg_color="transparent")
+        theme_frame.pack(side="right")
+        ctk.CTkButton(
+            theme_frame, text="⚡ Швидкий переклад", width=150, height=30,
+            font=ctk.CTkFont(size=12),
+            command=self._open_quick_translate,
+        ).pack(side="left", padx=(0, 8))
+        ctk.CTkLabel(theme_frame, text="☀", font=ctk.CTkFont(size=14)).pack(side="left", padx=(0, 2))
+        self._theme_switch = ctk.CTkSwitch(
+            theme_frame, text="", width=44, command=self._toggle_theme,
+        )
+        self._theme_switch.pack(side="left")
+        self._theme_switch.select()
+        ctk.CTkLabel(theme_frame, text="🌙", font=ctk.CTkFont(size=14)).pack(side="left", padx=(2, 10))
+        ctk.CTkButton(
+            theme_frame, text="ℹ", width=30, height=30,
+            font=ctk.CTkFont(size=14),
+            fg_color="transparent", hover_color=("gray80", "gray25"),
+            text_color=("gray40", "gray65"),
+            command=self._open_about,
+        ).pack(side="left")
+
+        # ── Settings card ────────────────────────────────────────────────────
+        card = ctk.CTkFrame(self, fg_color=("gray88", "gray17"), corner_radius=10)
+        card.pack(fill="x", padx=14, pady=(0, 4))
+
+        # File row
+        file_row = ctk.CTkFrame(card, fg_color="transparent")
+        file_row.pack(fill="x", padx=14, pady=(12, 5))
+        ctk.CTkLabel(file_row, text="Файл:", width=72, anchor="w",
+                     font=ctk.CTkFont(size=13)).pack(side="left")
+        self._file_var = ctk.StringVar(value="Файл не вибрано")
+        ctk.CTkEntry(file_row, textvariable=self._file_var, state="readonly",
+                     width=W - 72 - 90).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(file_row, text="Огляд", width=82,
+                      command=self._browse).pack(side="left")
+
+        # Language row
+        lang_row = ctk.CTkFrame(card, fg_color="transparent")
+        lang_row.pack(fill="x", padx=14, pady=5)
+        ctk.CTkLabel(lang_row, text="Мова:", width=72, anchor="w",
+                     font=ctk.CTkFont(size=13)).pack(side="left")
+        self._lang_menu = ctk.CTkOptionMenu(
+            lang_row, values=POPULAR_LANGUAGES, width=230,
+            command=self._on_lang_select,
+        )
+        self._lang_menu.set(POPULAR_LANGUAGES[0])
+        self._lang_menu.pack(side="left", padx=(0, 8))
+        ctk.CTkButton(lang_row, text="Всі мови...", width=110,
+                      command=self._open_all_langs).pack(side="left")
+
+        # Model row
+        model_row = ctk.CTkFrame(card, fg_color="transparent")
+        model_row.pack(fill="x", padx=14, pady=(5, 12))
+        ctk.CTkLabel(model_row, text="Модель:", width=72, anchor="w",
+                     font=ctk.CTkFont(size=13)).pack(side="left")
+        self._model_var = ctk.StringVar(value="Підключення...")
+        self._model_menu = ctk.CTkOptionMenu(
+            model_row, variable=self._model_var,
+            values=["Підключення..."], width=W - 72 - 90,
+        )
+        self._model_menu.pack(side="left", padx=(0, 8))
+        ctk.CTkButton(model_row, text="↺", width=36,
+                      command=self._refresh_models).pack(side="left", padx=(0, 6))
+        self._status_dot = ctk.CTkLabel(
+            model_row, text="●", font=ctk.CTkFont(size=16),
+            text_color="gray", width=20,
+        )
+        self._status_dot.pack(side="left")
+
+        # ── Server settings ──────────────────────────────────────────────────
+        _divider(self)
+        self._srv_hdr_row, self._srv_toggle_btn = _section_header(
+            self, None, "▶  Налаштування сервера", self._toggle_server,
+        )
+
+        self._server_frame = ctk.CTkFrame(self, fg_color=("gray88", "gray17"), corner_radius=8)
+        srv_inner = ctk.CTkFrame(self._server_frame, fg_color="transparent")
+        srv_inner.pack(fill="x", padx=12, pady=10)
+        ctk.CTkLabel(srv_inner, text="Адреса Ollama:", width=110, anchor="w").pack(side="left")
+        self._host_var = ctk.StringVar(value=DEFAULT_OLLAMA_HOST)
+        ctk.CTkEntry(srv_inner, textvariable=self._host_var, width=310).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(srv_inner, text="Застосувати", width=110,
+                      command=self._apply_server).pack(side="left")
+
+        # ── Log section ──────────────────────────────────────────────────────
+        _divider(self)
+        log_hdr_row = ctk.CTkFrame(self, fg_color="transparent")
+        log_hdr_row.pack(fill="x", padx=16, pady=(4, 2))
+        self._log_toggle_btn = ctk.CTkButton(
+            log_hdr_row, text="▼  Журнал виконання", anchor="w",
+            fg_color="transparent", hover_color=("gray82", "gray25"),
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color=("gray35", "gray65"),
+            command=self._toggle_log,
+        )
+        self._log_toggle_btn.pack(side="left")
+        self._log_enabled_var = ctk.BooleanVar(value=False)
+        ctk.CTkCheckBox(
+            log_hdr_row, text="Зберігати у файл",
+            variable=self._log_enabled_var,
+            font=ctk.CTkFont(size=12),
+            command=self._toggle_logging,
+        ).pack(side="right")
+
+        self._log_box = ctk.CTkTextbox(
+            self, height=175, font=ctk.CTkFont(family="Consolas", size=12),
+            state="disabled", wrap="word",
+        )
+        self._log_box.pack(fill="x", padx=14, pady=(2, 0))
+
+        # ── Progress row ─────────────────────────────────────────────────────
+        _divider(self)
+        progress_row = ctk.CTkFrame(self, fg_color="transparent")
+        progress_row.pack(fill="x", padx=14, pady=(2, 4))
+        self._progressbar = ctk.CTkProgressBar(progress_row)
+        self._progressbar.set(0)
+        self._progressbar.pack(side="left", fill="x", expand=True, padx=(0, 10))
+        self._stop_btn = ctk.CTkButton(
+            progress_row, text="■ Стоп", width=90, height=26,
+            font=ctk.CTkFont(size=12, weight="bold"),
+            fg_color="#c0392b", hover_color="#96281b",
+            state="disabled", command=self._stop,
+        )
+        self._stop_btn.pack(side="left")
+
+        self._progress_label = ctk.CTkLabel(
+            self, text="", text_color="gray", font=ctk.CTkFont(size=11),
+        )
+        self._progress_label.pack(pady=(0, 4))
+
+        # ── Start button ─────────────────────────────────────────────────────
+        self._start_btn = ctk.CTkButton(
+            self, text="Розпочати переклад", height=42,
+            font=ctk.CTkFont(size=14, weight="bold"),
+            command=self._start,
+        )
+        self._start_btn.pack(fill="x", padx=14, pady=(2, 8))
+
+        # ── Status bar ───────────────────────────────────────────────────────
+        ctk.CTkFrame(self, height=1, fg_color=("gray75", "gray30")).pack(fill="x")
+        self._statusbar = ctk.CTkLabel(
+            self, text=f"Журнал: {_log_path}",
+            font=ctk.CTkFont(size=10), text_color="gray", anchor="w",
+        )
+        self._statusbar.pack(fill="x", padx=12, pady=(3, 4))
+
+    # ── Window resize ─────────────────────────────────────────────────────────
+
+    def _fit_window(self):
+        self.update_idletasks()
+        self.geometry(f"640x{self.winfo_reqheight()}")
+
+    # ── Theme ─────────────────────────────────────────────────────────────────
+
+    def _toggle_theme(self):
+        mode = "dark" if self._theme_switch.get() else "light"
+        ctk.set_appearance_mode(mode)
+
+    # ── About ─────────────────────────────────────────────────────────────────
+
+    def _open_about(self):
+        AboutDialog(self)
+
+    # ── Quick Translate ───────────────────────────────────────────────────────
+
+    def _open_quick_translate(self):
+        if hasattr(self, "_quick_win") and self._quick_win.winfo_exists():
+            self._quick_win.lift()
+            self._quick_win.focus_force()
+            return
+        self._quick_win = QuickTranslateWindow(
+            self,
+            get_model=self._model_var.get,
+            get_host=self._get_host,
+        )
+
+    # ── Server settings ───────────────────────────────────────────────────────
+
+    def _toggle_server(self):
+        self._server_visible = not self._server_visible
+        if self._server_visible:
+            self._server_frame.pack(fill="x", padx=14, pady=(0, 4),
+                                    after=self._srv_hdr_row)
+            self._srv_toggle_btn.configure(text="▼  Налаштування сервера")
+        else:
+            self._server_frame.pack_forget()
+            self._srv_toggle_btn.configure(text="▶  Налаштування сервера")
+        self._fit_window()
+
+    def _apply_server(self):
+        host = self._host_var.get().strip()
+        if not host:
+            messagebox.showwarning("Порожня адреса", "Введіть адресу сервера Ollama.")
+            return
+        self._append_log(f"Адреса сервера: {host}")
+        self._refresh_models()
+
+    def _get_host(self):
+        return self._host_var.get().strip() or DEFAULT_OLLAMA_HOST
+
+    # ── Log section ───────────────────────────────────────────────────────────
+
+    def _toggle_log(self):
+        self._log_visible = not self._log_visible
+        if self._log_visible:
+            self._log_box.pack(fill="x", padx=14, pady=(2, 0),
+                               before=self._progressbar.master)
+            self._log_toggle_btn.configure(text="▼  Журнал виконання")
+        else:
+            self._log_box.pack_forget()
+            self._log_toggle_btn.configure(text="▶  Журнал виконання")
+        self._fit_window()
+
+    def _toggle_logging(self):
+        global _logging_enabled
+        _logging_enabled = self._log_enabled_var.get()
+        if _logging_enabled:
+            self._append_log(f"Логування увімкнено → {_log_path}")
+            self._statusbar.configure(text=f"Журнал: {_log_path}")
+        else:
+            self._append_log("Логування вимкнено")
+            self._statusbar.configure(text="Логування вимкнено")
+
+    # ── Language ──────────────────────────────────────────────────────────────
+
+    def _on_lang_select(self, value):
+        self._selected_lang = LANG_UK_TO_EN.get(value, value)
+
+    def _open_all_langs(self):
+        AllLanguagesDialog(self, self._set_custom_lang)
+
+    def _set_custom_lang(self, lang):
+        self._selected_lang = lang
+        values = [v for v in self._lang_menu.cget("values") if v in POPULAR_LANGUAGES]
+        values.append(lang)
+        self._lang_menu.configure(values=values)
+        self._lang_menu.set(lang)
+
+    # ── Models ────────────────────────────────────────────────────────────────
+
+    def _refresh_models(self):
+        self._model_menu.configure(state="disabled")
+        self._model_var.set("Підключення...")
+        self._status_dot.configure(text_color="#f39c12")  # yellow = connecting
+
+        def fetch():
+            host = self._get_host()
+            try:
+                client = ollama.Client(host=host)
+                resp = client.list()
+                models = [m['model'] for m in resp.get('models', [])]
+                if models:
+                    self.after(0, lambda: self._set_models(models))
+                else:
+                    self.after(0, lambda: self._set_models_error("Моделі не знайдено"))
+            except Exception as e:
+                self.after(0, lambda: self._set_models_error(str(e)))
+
+        threading.Thread(target=fetch, daemon=True).start()
+
+    def _set_models(self, models):
+        self._model_menu.configure(values=models, state="normal")
+        self._model_var.set(models[0])
+        self._status_dot.configure(text_color="#27ae60")  # green = connected
+        self._append_log(f"Ollama підключено  •  моделей: {len(models)}")
+
+    def _set_models_error(self, err):
+        self._model_menu.configure(values=["— немає з'єднання —"], state="normal")
+        self._model_var.set("— немає з'єднання —")
+        self._status_dot.configure(text_color="#c0392b")  # red = error
+        self._append_log(f"[ПОМИЛКА] Ollama: {err}")
+
+    # ── Log box ───────────────────────────────────────────────────────────────
+
+    def _append_log(self, msg):
+        self._log_box.configure(state="normal")
+        self._log_box.insert("end", msg + "\n")
+        self._log_box.see("end")
+        self._log_box.configure(state="disabled")
+
+    def _clear_log(self):
+        self._log_box.configure(state="normal")
+        self._log_box.delete("1.0", "end")
+        self._log_box.configure(state="disabled")
+
+    # ── File ──────────────────────────────────────────────────────────────────
+
+    def _browse(self):
+        path = filedialog.askopenfilename(
+            title="Виберіть файл для перекладу",
+            filetypes=[
+                ("Підтримувані файли", "*.docx *.pdf"),
+                ("Word документи", "*.docx"),
+                ("PDF документи", "*.pdf"),
+            ],
+        )
+        if path:
+            self._file_var.set(path)
+
+    # ── Start / Stop ──────────────────────────────────────────────────────────
+
+    def _start(self):
+        input_path = self._file_var.get()
+        if not input_path or input_path == "Файл не вибрано":
+            messagebox.showwarning("Файл не вибрано", "Будь ласка, виберіть DOCX або PDF файл.")
+            return
+        if not os.path.isfile(input_path):
+            messagebox.showerror("Файл не знайдено", f"Файл не існує:\n{input_path}")
+            return
+        ext = os.path.splitext(input_path)[1].lower()
+        if ext not in (".docx", ".pdf"):
+            messagebox.showerror("Непідтримуваний формат", "Підтримуються лише DOCX та PDF файли.")
+            return
+        model = self._model_var.get()
+        if model in ("Завантаження...", "Підключення...", "— немає з'єднання —"):
+            messagebox.showwarning("Модель не вибрана",
+                                   "Дочекайтесь підключення до Ollama або оновіть список.")
+            return
+
+        self._clear_log()
+        self._progressbar.set(0)
+        self._progress_label.configure(text="")
+        self._start_btn.configure(state="disabled", text="Перекладаю...")
+        self._stop_btn.configure(state="normal")
+
+        worker_fn = run_translation_pdf if ext == ".pdf" else run_translation
+
+        self._stop_event = threading.Event()
+        self._msg_queue = queue.Queue()
+        self._total_runs = 0
+        self._worker = threading.Thread(
+            target=worker_fn,
+            args=(input_path, self._selected_lang, model,
+                  self._get_host(), self._msg_queue, self._stop_event),
+            daemon=True,
+        )
+        self._worker.start()
+        self.after(100, self._poll_queue)
+
+    def _stop(self):
+        self._stop_event.set()
+        self._stop_btn.configure(state="disabled", text="Зупиняю...")
+
+    def _poll_queue(self):
+        try:
+            while True:
+                kind, data = self._msg_queue.get_nowait()
+                if kind == "log":
+                    self._append_log(data)
+                elif kind == "total":
+                    self._total_runs = data
+                elif kind == "progress":
+                    done = data
+                    total = self._total_runs or 1
+                    self._progressbar.set(done / total)
+                    self._progress_label.configure(
+                        text=f"{done} / {total}  •  {int(done / total * 100)}%"
+                    )
+                elif kind == "done":
+                    self._on_done(data)
+                    return
+                elif kind == "stopped":
+                    self._on_stopped()
+                    return
+                elif kind == "error":
+                    self._on_error(data)
+                    return
+        except queue.Empty:
+            pass
+        self.after(100, self._poll_queue)
+
+    def _on_done(self, output_path):
+        self._progressbar.set(1)
+        self._progress_label.configure(text="✓ Готово!")
+        self._append_log(f"\n✓ Переклад завершено!\n  {output_path}")
+        self._start_btn.configure(state="normal", text="Розпочати переклад")
+        self._stop_btn.configure(state="disabled", text="■ Стоп")
+        messagebox.showinfo("Готово", f"Файл збережено:\n{output_path}")
+
+    def _on_stopped(self):
+        self._progress_label.configure(text="⛔ Зупинено")
+        self._start_btn.configure(state="normal", text="Розпочати переклад")
+        self._stop_btn.configure(state="disabled", text="■ Стоп")
+
+    def _on_error(self, err):
+        self._append_log(f"\n[ПОМИЛКА] {err}")
+        self._start_btn.configure(state="normal", text="Розпочати переклад")
+        self._stop_btn.configure(state="disabled", text="■ Стоп")
+        messagebox.showerror("Помилка", err)
+
+
+if __name__ == "__main__":
+    app = App()
+    app.mainloop()
+    if _log_file is not None:
+        _log_file.close()

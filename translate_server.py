@@ -4,9 +4,12 @@ import os
 import datetime
 import uuid
 import threading
+import queue as _queue_mod
+import secrets
+import base64
 from urllib.parse import quote
 import requests as req_lib
-from fastapi import FastAPI, UploadFile, File, Form
+from fastapi import FastAPI, UploadFile, File, Form, Request
 from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse, Response
 from pydantic import BaseModel
 
@@ -15,17 +18,56 @@ from pydantic import BaseModel
 CONFIG_FILE = os.path.join(os.path.dirname(__file__), "translator_config.json")
 
 DEFAULTS = {
-    "base_url":        "http://192.168.200.92:30286/v1",
-    "model":           "yanolja_yanoljanext-rosetta-12b-2510",
+    "base_url":        "http://192.168.200.133:11434/v1",
+    "model":           "gemma4:e4b",
     "max_tokens":      2048,
     "llm_timeout":     180,
     "chunk_size":      3000,
     "system_msg":      "You are a professional translator. Translate accurately and naturally, preserving the original tone and style.",
     "prompt_template": "{text}\n\n§ Translate the text above {direction}. This is a {context}. Keep all ⟨P⟩ and ⟨N⟩ markers exactly in place — they mark paragraph and line breaks. Preserve technical terms, proper nouns, and numbers exactly. Do not add notes or commentary. Output ONLY the translation. §",
+    "auth_user":       "admin",
+    "auth_pass":       "translate",
 }
 
 HOST = "0.0.0.0"
 PORT = 7860
+
+LANG_NAMES_UK = {
+    "Arabic":     "Арабська",
+    "Bulgarian":  "Болгарська",
+    "Chinese":    "Китайська",
+    "Czech":      "Чеська",
+    "Danish":     "Данська",
+    "Dutch":      "Нідерландська",
+    "English":    "Англійська",
+    "Esperanto":  "Есперанто",
+    "Finnish":    "Фінська",
+    "French":     "Французька",
+    "German":     "Німецька",
+    "Greek":      "Грецька",
+    "Gujarati":   "Гуджараті",
+    "Hebrew":     "Іврит",
+    "Hindi":      "Гінді",
+    "Hungarian":  "Угорська",
+    "Indonesian": "Індонезійська",
+    "Italian":    "Італійська",
+    "Japanese":   "Японська",
+    "Korean":     "Корейська",
+    "Latin":      "Латинська",
+    "Persian":    "Перська",
+    "Polish":     "Польська",
+    "Portuguese": "Португальська",
+    "Romanian":   "Румунська",
+    "Russian":    "Російська",
+    "Slovak":     "Словацька",
+    "Spanish":    "Іспанська",
+    "Swedish":    "Шведська",
+    "Tagalog":    "Тагальська",
+    "Thai":       "Тайська",
+    "Turkish":    "Турецька",
+    "Ukrainian":  "Українська",
+    "Vietnamese": "В'єтнамська",
+}
 
 LANG_MAP = {
     "Arabic":     "ar",
@@ -88,8 +130,47 @@ CFG = load_config()
 
 app = FastAPI()
 
+
+@app.middleware("http")
+async def basic_auth(request: Request, call_next):
+    if request.url.path == "/health":
+        return await call_next(request)
+    auth = request.headers.get("Authorization", "")
+    if auth.startswith("Basic "):
+        try:
+            decoded = base64.b64decode(auth[6:]).decode("utf-8")
+            user, _, pwd = decoded.partition(":")
+            if (secrets.compare_digest(user, CFG.get("auth_user", "admin")) and
+                    secrets.compare_digest(pwd, CFG.get("auth_pass", "translate"))):
+                return await call_next(request)
+        except Exception:
+            pass
+    return Response(
+        status_code=401,
+        headers={"WWW-Authenticate": 'Basic realm="Translator"'},
+    )
+
+
 _active: dict[str, threading.Event] = {}
 _results: dict[str, tuple[str, bytes]] = {}
+
+_job_queue: _queue_mod.Queue = _queue_mod.Queue()
+_ticket_lock = threading.Lock()
+_ticket_issued = 0
+_ticket_serving = 0
+
+
+def _queue_worker():
+    global _ticket_serving
+    while True:
+        start_evt, done_evt = _job_queue.get()
+        with _ticket_lock:
+            _ticket_serving += 1
+        start_evt.set()
+        done_evt.wait()
+
+
+threading.Thread(target=_queue_worker, daemon=True).start()
 
 
 def extract_text(filename: str, content: bytes) -> str:
@@ -215,6 +296,13 @@ HTML = r"""<!DOCTYPE html>
 </style>
 </head>
 <body>
+<div style="background:#fef9c3; border:1px solid #fde047; border-radius:8px; padding:14px 20px; margin-bottom:20px; display:flex; align-items:center; gap:12px;">
+  <span style="font-size:1.4rem;">🧪</span>
+  <div>
+    <strong style="color:#854d0e;">Тестовий режим</strong>
+    <span style="color:#713f12; font-size:.9rem;"> — сервіс працює в режимі тестування. Обробка одного запиту може займати до <strong>5 хвилин</strong>. Дякуємо за терпіння!</span>
+  </div>
+</div>
 <h1>LocalAI Перекладач</h1>
 
 <!-- Language selectors + Advanced (shared) -->
@@ -256,6 +344,13 @@ HTML = r"""<!DOCTYPE html>
   <div style="margin-bottom:12px; margin-top:8px;">
     <textarea id="input" rows="6" placeholder="Введіть текст тут..."></textarea>
   </div>
+  <div id="queue-banner" style="display:none; background:#fff7ed; border:1px solid #fb923c; border-radius:8px; padding:12px 16px; margin-bottom:12px; gap:10px;">
+    <span style="font-size:1.3rem;">⏳</span>
+    <div>
+      <strong style="color:#9a3412;">Запит у черзі</strong>
+      <span id="queue-banner-text" style="color:#7c2d12; font-size:.9rem;"></span>
+    </div>
+  </div>
   <div class="btn-row">
     <button id="btn" onclick="doTranslate()">Перекласти</button>
     <button id="stopBtn" class="btn-stop" onclick="doStop()">Зупинити</button>
@@ -266,6 +361,13 @@ HTML = r"""<!DOCTYPE html>
 <div class="card">
   <label style="margin-bottom:8px">Результат перекладу</label>
   <textarea id="result" rows="6" readonly placeholder="Результат з'явиться тут..."></textarea>
+</div>
+
+<div class="card" id="thinking-card" style="display:none;">
+  <details id="thinking-details">
+    <summary style="font-size:.85rem; color:#7c3aed; cursor:pointer; user-select:none;">&#129504; Думки моделі</summary>
+    <div id="thinking" style="background:#faf5ff; border:1px solid #e9d5ff; border-radius:6px; padding:10px; margin-top:8px; font-family:monospace; font-size:.78rem; color:#4c1d95; white-space:pre-wrap; word-break:break-word; max-height:300px; overflow-y:auto;"></div>
+  </details>
 </div>
 
 <div class="card">
@@ -391,6 +493,46 @@ async function resetSettings() {
 // ── Text translation ──────────────────────────────────────────────────
 let _controller = null;
 let _requestId = null;
+let _thinkMode = false;
+let _tagBuf = '';
+
+function handleToken(text) {
+  const resultEl = document.getElementById('result');
+  const thinkEl  = document.getElementById('thinking');
+  const thinkCard = document.getElementById('thinking-card');
+  _tagBuf += text;
+  while (_tagBuf.length > 0) {
+    if (_thinkMode) {
+      const end = _tagBuf.indexOf('</think>');
+      if (end !== -1) {
+        thinkEl.textContent += _tagBuf.slice(0, end);
+        thinkEl.scrollTop = thinkEl.scrollHeight;
+        _tagBuf = _tagBuf.slice(end + 8);
+        _thinkMode = false;
+      } else if (_tagBuf.length > 8) {
+        const safe = _tagBuf.slice(0, _tagBuf.length - 8);
+        thinkEl.textContent += safe;
+        thinkEl.scrollTop = thinkEl.scrollHeight;
+        _tagBuf = _tagBuf.slice(safe.length);
+        break;
+      } else { break; }
+    } else {
+      const start = _tagBuf.indexOf('<think>');
+      if (start !== -1) {
+        resultEl.value += _tagBuf.slice(0, start);
+        _tagBuf = _tagBuf.slice(start + 7);
+        _thinkMode = true;
+        thinkCard.style.display = 'block';
+        document.getElementById('thinking-details').open = true;
+      } else if (_tagBuf.length > 7) {
+        const safe = _tagBuf.slice(0, _tagBuf.length - 7);
+        resultEl.value += safe;
+        _tagBuf = _tagBuf.slice(safe.length);
+        break;
+      } else { break; }
+    }
+  }
+}
 
 function setWorking(on) {
   document.getElementById('btn').disabled = on;
@@ -403,6 +545,7 @@ async function doStop() {
     await fetch('/stop/' + _requestId, { method: 'POST' }).catch(() => {});
     _requestId = null;
   }
+  document.getElementById('queue-banner').style.display = 'none';
   document.getElementById('status').textContent = 'Зупинено';
   setWorking(false);
 }
@@ -416,9 +559,14 @@ async function doTranslate() {
   const status = document.getElementById('status');
 
   setWorking(true);
+  document.getElementById('queue-banner').style.display = 'none';
   log.textContent = '';
   result.value = '';
   status.textContent = 'Перекладаю...';
+  document.getElementById('thinking').textContent = '';
+  document.getElementById('thinking-card').style.display = 'none';
+  _thinkMode = false;
+  _tagBuf = '';
 
   const startTime = Date.now();
   _controller = new AbortController();
@@ -451,8 +599,29 @@ async function doTranslate() {
         if (!line.startsWith('data: ')) continue;
         let evt; try { evt = JSON.parse(line.slice(6)); } catch { continue; }
         if (evt.type === 'id') { _requestId = evt.text; }
+        else if (evt.type === 'thinking') {
+          const thinkingCard = document.getElementById('thinking-card');
+          const thinkingBox = document.getElementById('thinking');
+          const details = document.getElementById('thinking-details');
+          thinkingCard.style.display = 'block';
+          details.open = true;
+          thinkingBox.textContent += evt.text;
+          thinkingBox.scrollTop = thinkingBox.scrollHeight;
+        }
+        else if (evt.type === 'queue') {
+          const banner = document.getElementById('queue-banner');
+          const bannerText = document.getElementById('queue-banner-text');
+          if (evt.ahead > 0) {
+            bannerText.textContent = ` — попереду ${evt.ahead} запит${evt.ahead > 1 ? 'и' : ''}. Очікуйте...`;
+            banner.style.cssText = 'display:flex; align-items:center; gap:10px; background:#fff7ed; border:1px solid #fb923c; border-radius:8px; padding:12px 16px; margin-bottom:12px;';
+            status.textContent = '';
+          } else {
+            banner.style.display = 'none';
+            status.textContent = 'Перекладаю...';
+          }
+        }
         else if (evt.type === 'log') { log.textContent += evt.text + '\n'; log.scrollTop = log.scrollHeight; }
-        else if (evt.type === 'token') { result.value += evt.text; }
+        else if (evt.type === 'token') { handleToken(evt.text); }
         else if (evt.type === 'result') {
           result.value = evt.text;
           status.textContent = `Готово за ${((Date.now()-startTime)/1000).toFixed(1)}с`;
@@ -581,9 +750,9 @@ async function initSelects() {
   const from = document.getElementById('lang_from');
   const to   = document.getElementById('lang_to');
   from.appendChild(new Option('Автовизначення', 'auto'));
-  langs.forEach(l => {
-    from.appendChild(new Option(l, l));
-    to.appendChild(new Option(l, l));
+  langs.forEach(({ label, value }) => {
+    from.appendChild(new Option(label, value));
+    to.appendChild(new Option(label, value));
   });
   to.value = 'Ukrainian';
 }
@@ -613,7 +782,8 @@ def index():
 
 @app.get("/languages")
 def get_languages():
-    return JSONResponse(sorted(LANG_MAP.keys()))
+    langs = sorted(LANG_MAP.keys(), key=lambda k: LANG_NAMES_UK[k])
+    return JSONResponse([{"label": LANG_NAMES_UK[k], "value": k} for k in langs])
 
 
 @app.get("/config")
@@ -651,9 +821,17 @@ def stop_translation(request_id: str):
 
 @app.post("/translate")
 def translate(req: TranslateRequest):
+    global _ticket_issued
     request_id = str(uuid.uuid4())
     stop_event = threading.Event()
     _active[request_id] = stop_event
+
+    start_evt = threading.Event()
+    done_evt = threading.Event()
+    with _ticket_lock:
+        _ticket_issued += 1
+        my_ticket = _ticket_issued
+    _job_queue.put((start_evt, done_evt))
 
     def generate():
         def log(msg: str):
@@ -664,6 +842,18 @@ def translate(req: TranslateRequest):
 
         try:
             yield f"data: {json.dumps({'type': 'id', 'text': request_id})}\n\n"
+
+            # Wait in queue until our turn
+            while not start_evt.wait(timeout=2):
+                if stop_event.is_set():
+                    yield f"data: {json.dumps({'type': 'done'})}\n\n"
+                    return
+                with _ticket_lock:
+                    ahead = my_ticket - _ticket_serving
+                if ahead > 0:
+                    yield f"data: {json.dumps({'type': 'queue', 'ahead': ahead})}\n\n"
+
+            yield f"data: {json.dumps({'type': 'queue', 'ahead': 0})}\n\n"
 
             lang_to_code = LANG_MAP.get(req.lang_to, req.lang_to)
             lang_from_code = LANG_MAP.get(req.lang_from)
@@ -695,7 +885,7 @@ def translate(req: TranslateRequest):
                 resp = req_lib.post(
                     f"{CFG['base_url']}/chat/completions",
                     headers={"Authorization": "Bearer dummy", "Content-Type": "application/json"},
-                    json={"model": CFG["model"], "stream": True, "max_tokens": CFG["max_tokens"], "messages": messages},
+                    json={"model": CFG["model"], "stream": True, "max_tokens": CFG["max_tokens"], "messages": messages, "think": True},
                     timeout=CFG["llm_timeout"],
                     stream=True,
                 )
@@ -725,7 +915,10 @@ def translate(req: TranslateRequest):
                         yield f"data: {json.dumps({'type': 'error', 'text': str(chunk['error'])})}\n\n"
                         return
                     delta = chunk.get("choices", [{}])[0].get("delta", {})
+                    thinking_token = delta.get("thinking", "")
                     token = delta.get("content", "")
+                    if thinking_token:
+                        yield f"data: {json.dumps({'type': 'thinking', 'text': thinking_token})}\n\n"
                     if token:
                         collected.append(token)
                         yield f"data: {json.dumps({'type': 'token', 'text': token})}\n\n"
@@ -748,6 +941,7 @@ def translate(req: TranslateRequest):
 
             yield f"data: {json.dumps({'type': 'done'})}\n\n"
         finally:
+            done_evt.set()
             _active.pop(request_id, None)
 
     return StreamingResponse(generate(), media_type="text/event-stream")
