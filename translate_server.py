@@ -131,9 +131,13 @@ CFG = load_config()
 app = FastAPI()
 
 
+ADMIN_PATHS = ("/admin", "/config")
+
+
 @app.middleware("http")
 async def basic_auth(request: Request, call_next):
-    if request.url.path == "/health":
+    path = request.url.path
+    if not any(path.startswith(p) for p in ADMIN_PATHS):
         return await call_next(request)
     auth = request.headers.get("Authorization", "")
     if auth.startswith("Basic "):
@@ -147,7 +151,7 @@ async def basic_auth(request: Request, call_next):
             pass
     return Response(
         status_code=401,
-        headers={"WWW-Authenticate": 'Basic realm="Translator"'},
+        headers={"WWW-Authenticate": 'Basic realm="Translator Admin"'},
     )
 
 
@@ -241,11 +245,427 @@ def call_llm(messages: list, stop_event: threading.Event) -> str | None:
     return result.replace("⟨P⟩", "\n\n").replace("⟨N⟩", "\n")
 
 
-HTML = r"""<!DOCTYPE html>
+USER_HTML = r"""<!DOCTYPE html>
 <html lang="uk">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Перекладач</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg: #f8fafc;
+    --card: #ffffff;
+    --border: #e2e8f0;
+    --text: #1e293b;
+    --muted: #64748b;
+    --primary: #2563eb;
+    --primary-hover: #1d4ed8;
+    --primary-light: #dbeafe;
+    --danger: #dc2626;
+    --danger-hover: #b91c1c;
+    --success: #16a34a;
+    --success-hover: #15803d;
+    --shadow: 0 1px 3px rgba(0,0,0,0.04), 0 1px 2px rgba(0,0,0,0.06);
+  }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    padding: 32px 20px;
+    min-height: 100vh;
+    line-height: 1.5;
+  }
+  .container { max-width: 920px; margin: 0 auto; }
+  header { text-align: center; margin-bottom: 32px; }
+  header h1 { font-size: 1.75rem; font-weight: 600; color: var(--text); }
+  header p { color: var(--muted); font-size: 0.95rem; margin-top: 4px; }
+
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px;
+    box-shadow: var(--shadow);
+    margin-bottom: 16px;
+  }
+
+  .lang-bar {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    gap: 12px;
+    align-items: end;
+  }
+  .lang-bar label { display: block; font-size: 0.8rem; color: var(--muted); margin-bottom: 6px; font-weight: 500; }
+  .lang-bar select {
+    width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px;
+    font-size: 0.95rem; background: var(--card); cursor: pointer;
+  }
+  .lang-bar select:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-light); }
+  .swap-btn {
+    width: 40px; height: 40px; border-radius: 8px; border: 1px solid var(--border);
+    background: var(--card); cursor: pointer; font-size: 1.1rem; color: var(--muted);
+    display: flex; align-items: center; justify-content: center;
+    transition: all 0.15s;
+  }
+  .swap-btn:hover { border-color: var(--primary); color: var(--primary); }
+
+  .tabs { display: flex; gap: 4px; margin-bottom: 16px; background: var(--border); padding: 4px; border-radius: 10px; }
+  .tab {
+    flex: 1; padding: 10px; border: none; background: transparent; cursor: pointer;
+    border-radius: 7px; font-size: 0.95rem; font-weight: 500; color: var(--muted);
+    transition: all 0.15s;
+  }
+  .tab.active { background: var(--card); color: var(--text); box-shadow: var(--shadow); }
+
+  .panel { display: none; }
+  .panel.active { display: block; }
+
+  textarea {
+    width: 100%; padding: 14px; border: 1px solid var(--border); border-radius: 8px;
+    font-size: 0.95rem; font-family: inherit; resize: vertical; min-height: 140px;
+    line-height: 1.6; background: var(--card); color: var(--text);
+  }
+  textarea:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-light); }
+  textarea[readonly] { background: #f1f5f9; }
+
+  .drop-zone {
+    border: 2px dashed var(--border); border-radius: 10px; padding: 40px 20px;
+    text-align: center; cursor: pointer; transition: all 0.15s; background: var(--card);
+  }
+  .drop-zone:hover, .drop-zone.drag-over { border-color: var(--primary); background: var(--primary-light); }
+  .drop-zone-icon { font-size: 2rem; margin-bottom: 8px; }
+  .drop-zone-text { color: var(--muted); font-size: 0.95rem; }
+  .drop-zone-hint { color: var(--muted); font-size: 0.8rem; margin-top: 4px; }
+  .drop-zone input { display: none; }
+  .file-name { margin-top: 12px; padding: 10px 12px; background: var(--primary-light); border-radius: 8px; font-size: 0.9rem; color: var(--primary); }
+
+  .actions { display: flex; gap: 10px; margin-top: 14px; align-items: center; flex-wrap: wrap; }
+  button.primary, .download-link {
+    background: var(--primary); color: white; border: none; border-radius: 8px;
+    padding: 11px 22px; font-size: 0.95rem; font-weight: 500; cursor: pointer;
+    transition: background 0.15s; text-decoration: none; display: inline-flex; align-items: center; gap: 6px;
+  }
+  button.primary:hover { background: var(--primary-hover); }
+  button.primary:disabled { background: #93c5fd; cursor: not-allowed; }
+  button.stop {
+    background: var(--danger); color: white; border: none; border-radius: 8px;
+    padding: 11px 22px; font-size: 0.95rem; font-weight: 500; cursor: pointer;
+    transition: background 0.15s; display: none;
+  }
+  button.stop:hover { background: var(--danger-hover); }
+  button.stop.visible { display: inline-block; }
+  .download-link { background: var(--success); display: none; }
+  .download-link:hover { background: var(--success-hover); }
+  .download-link.visible { display: inline-flex; }
+
+  .status { font-size: 0.85rem; color: var(--muted); display: flex; align-items: center; gap: 8px; }
+  .status.error { color: var(--danger); }
+  .status.success { color: var(--success); }
+  .spinner {
+    width: 14px; height: 14px; border: 2px solid var(--border); border-top-color: var(--primary);
+    border-radius: 50%; animation: spin 0.8s linear infinite; display: none;
+  }
+  .spinner.visible { display: inline-block; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .result-label { font-size: 0.85rem; color: var(--muted); margin-bottom: 8px; font-weight: 500; }
+  .footer { text-align: center; margin-top: 24px; font-size: 0.8rem; color: var(--muted); }
+  .footer a { color: var(--muted); text-decoration: none; }
+  .footer a:hover { color: var(--primary); }
+</style>
+</head>
+<body>
+<div class="container">
+  <header>
+    <h1>Перекладач</h1>
+    <p>Локальний переклад документів і тексту</p>
+  </header>
+
+  <div class="card">
+    <div class="lang-bar">
+      <div>
+        <label>З мови</label>
+        <select id="lang_from"></select>
+      </div>
+      <button class="swap-btn" onclick="swapLangs()" title="Поміняти мови місцями">⇄</button>
+      <div>
+        <label>На мову</label>
+        <select id="lang_to"></select>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="tabs">
+      <button class="tab active" onclick="showTab('text')">Текст</button>
+      <button class="tab" onclick="showTab('file')">Файл</button>
+    </div>
+
+    <div id="panel-text" class="panel active">
+      <textarea id="input" placeholder="Введіть текст для перекладу..."></textarea>
+      <div class="actions">
+        <button id="btn-translate" class="primary" onclick="doTranslate()">Перекласти</button>
+        <button id="btn-stop" class="stop" onclick="doStop()">Зупинити</button>
+        <span class="spinner" id="text-spinner"></span>
+        <span class="status" id="text-status"></span>
+      </div>
+    </div>
+
+    <div id="panel-file" class="panel">
+      <div class="drop-zone" id="drop-zone" onclick="document.getElementById('file-input').click()">
+        <input type="file" id="file-input" accept=".pdf,.docx,.txt" onchange="fileSelected(this.files[0])">
+        <div class="drop-zone-icon">📄</div>
+        <div class="drop-zone-text">Натисніть або перетягніть файл</div>
+        <div class="drop-zone-hint">Підтримуються DOCX, PDF, TXT</div>
+      </div>
+      <div class="file-name" id="file-name" style="display:none"></div>
+      <div class="actions">
+        <button id="btn-file" class="primary" onclick="doTranslateFile()">Перекласти файл</button>
+        <button id="btn-file-stop" class="stop" onclick="doFileStop()">Зупинити</button>
+        <a id="download-link" class="download-link">↓ Скачати результат</a>
+        <span class="spinner" id="file-spinner"></span>
+        <span class="status" id="file-status"></span>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" id="result-card" style="display:none">
+    <div class="result-label">Результат</div>
+    <textarea id="result" readonly></textarea>
+  </div>
+
+  <div class="footer">
+    <a href="/admin">Адміністрування</a>
+  </div>
+</div>
+
+<script>
+// ── Tabs ──────────────────────────────────────────────────────────────
+function showTab(name) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  event.target.classList.add('active');
+  document.getElementById('panel-' + name).classList.add('active');
+}
+
+// ── Languages ─────────────────────────────────────────────────────────
+async function initLangs() {
+  const r = await fetch('/languages');
+  const langs = await r.json();
+  const from = document.getElementById('lang_from');
+  const to = document.getElementById('lang_to');
+  from.appendChild(new Option('Автовизначення', 'auto'));
+  langs.forEach(({label, value}) => {
+    from.appendChild(new Option(label, value));
+    to.appendChild(new Option(label, value));
+  });
+  to.value = 'Ukrainian';
+}
+
+function swapLangs() {
+  const from = document.getElementById('lang_from');
+  const to = document.getElementById('lang_to');
+  if (from.value === 'auto') return;
+  const tmp = from.value;
+  from.value = to.value;
+  to.value = tmp;
+}
+
+// ── Status helpers ────────────────────────────────────────────────────
+function setStatus(id, text, type='') {
+  const el = document.getElementById(id);
+  el.textContent = text;
+  el.className = 'status' + (type ? ' ' + type : '');
+}
+function setSpinner(id, on) {
+  document.getElementById(id).classList.toggle('visible', on);
+}
+function setWorking(prefix, on) {
+  document.getElementById('btn-' + (prefix === 'text' ? 'translate' : 'file')).disabled = on;
+  document.getElementById('btn-' + (prefix === 'text' ? 'stop' : 'file-stop')).classList.toggle('visible', on);
+  setSpinner(prefix + '-spinner', on);
+}
+
+// ── Text translation ──────────────────────────────────────────────────
+let _textController = null;
+let _textRequestId = null;
+let _textTokens = '';
+
+async function doTranslate() {
+  const text = document.getElementById('input').value.trim();
+  if (!text) { setStatus('text-status', 'Введіть текст', 'error'); return; }
+
+  setWorking('text', true);
+  setStatus('text-status', 'Перекладаю...');
+  document.getElementById('result-card').style.display = 'none';
+  _textTokens = '';
+  _textController = new AbortController();
+
+  try {
+    const resp = await fetch('/translate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: _textController.signal,
+      body: JSON.stringify({
+        text,
+        lang_from: document.getElementById('lang_from').value,
+        lang_to: document.getElementById('lang_to').value,
+      }),
+    });
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    while (true) {
+      const {done, value} = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, {stream: true});
+      const lines = buffer.split('\n');
+      buffer = lines.pop();
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        let evt; try { evt = JSON.parse(line.slice(6)); } catch { continue; }
+        if (evt.type === 'id') _textRequestId = evt.text;
+        else if (evt.type === 'queue' && evt.ahead > 0) setStatus('text-status', `У черзі: попереду ${evt.ahead}`);
+        else if (evt.type === 'queue' && evt.ahead === 0) setStatus('text-status', 'Перекладаю...');
+        else if (evt.type === 'token') _textTokens += evt.text;
+        else if (evt.type === 'result') {
+          showResult(evt.text);
+          setStatus('text-status', 'Готово', 'success');
+        }
+        else if (evt.type === 'error') {
+          setStatus('text-status', 'Помилка: ' + (evt.text || 'невідома'), 'error');
+        }
+      }
+    }
+  } catch (e) {
+    if (e.name !== 'AbortError') setStatus('text-status', 'Помилка з\'єднання', 'error');
+  }
+  setWorking('text', false);
+  _textController = null;
+  _textRequestId = null;
+}
+
+function showResult(text) {
+  document.getElementById('result-card').style.display = 'block';
+  document.getElementById('result').value = text;
+}
+
+async function doStop() {
+  if (_textController) { _textController.abort(); _textController = null; }
+  if (_textRequestId) {
+    await fetch('/stop/' + _textRequestId, {method: 'POST'}).catch(() => {});
+    _textRequestId = null;
+  }
+  setStatus('text-status', 'Зупинено');
+  setWorking('text', false);
+}
+
+// ── File translation ──────────────────────────────────────────────────
+let _fileController = null;
+let _fileRequestId = null;
+let _selectedFile = null;
+
+function fileSelected(f) {
+  _selectedFile = f;
+  const nameEl = document.getElementById('file-name');
+  if (f) {
+    nameEl.textContent = f.name + ' (' + (f.size / 1024).toFixed(1) + ' KB)';
+    nameEl.style.display = 'block';
+  } else {
+    nameEl.style.display = 'none';
+  }
+  document.getElementById('download-link').classList.remove('visible');
+  setStatus('file-status', '');
+}
+
+const dropZone = document.getElementById('drop-zone');
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+dropZone.addEventListener('drop', e => {
+  e.preventDefault();
+  dropZone.classList.remove('drag-over');
+  if (e.dataTransfer.files[0]) fileSelected(e.dataTransfer.files[0]);
+});
+
+async function doTranslateFile() {
+  if (!_selectedFile) { setStatus('file-status', 'Оберіть файл', 'error'); return; }
+
+  setWorking('file', true);
+  setStatus('file-status', 'Завантаження...');
+  document.getElementById('download-link').classList.remove('visible');
+  _fileController = new AbortController();
+
+  const fd = new FormData();
+  fd.append('file', _selectedFile, _selectedFile.name);
+  fd.append('lang_from', document.getElementById('lang_from').value);
+  fd.append('lang_to', document.getElementById('lang_to').value);
+
+  try {
+    const resp = await fetch('/translate-file', {
+      method: 'POST',
+      signal: _fileController.signal,
+      body: fd,
+    });
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    while (true) {
+      const {done, value} = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, {stream: true});
+      const lines = buffer.split('\n');
+      buffer = lines.pop();
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        let evt; try { evt = JSON.parse(line.slice(6)); } catch { continue; }
+        if (evt.type === 'id') _fileRequestId = evt.text;
+        else if (evt.type === 'progress') setStatus('file-status', evt.text);
+        else if (evt.type === 'download') {
+          const link = document.getElementById('download-link');
+          link.href = evt.url;
+          link.download = evt.filename;
+          link.classList.add('visible');
+          setStatus('file-status', 'Готово', 'success');
+        }
+        else if (evt.type === 'error') {
+          setStatus('file-status', 'Помилка: ' + (evt.text || 'невідома'), 'error');
+        }
+      }
+    }
+  } catch (e) {
+    if (e.name !== 'AbortError') setStatus('file-status', 'Помилка з\'єднання', 'error');
+  }
+  setWorking('file', false);
+  _fileController = null;
+  _fileRequestId = null;
+}
+
+async function doFileStop() {
+  if (_fileController) { _fileController.abort(); _fileController = null; }
+  if (_fileRequestId) {
+    await fetch('/stop/' + _fileRequestId, {method: 'POST'}).catch(() => {});
+    _fileRequestId = null;
+  }
+  setStatus('file-status', 'Зупинено');
+  setWorking('file', false);
+}
+
+// ── Init ──────────────────────────────────────────────────────────────
+initLangs();
+document.getElementById('input').addEventListener('keydown', e => {
+  if (e.ctrlKey && e.key === 'Enter') doTranslate();
+});
+</script>
+</body>
+</html>"""
+
+
+ADMIN_HTML = r"""<!DOCTYPE html>
+<html lang="uk">
+<head>
+<meta charset="UTF-8">
+<title>Перекладач — Адмін</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: sans-serif; background: #f5f5f5; padding: 24px; max-width: 900px; margin: 0 auto; }
@@ -776,7 +1196,12 @@ class TranslateRequest(BaseModel):
 
 @app.get("/", response_class=HTMLResponse)
 def index():
-    return HTML
+    return USER_HTML
+
+
+@app.get("/admin", response_class=HTMLResponse)
+def admin():
+    return ADMIN_HTML
 
 
 
