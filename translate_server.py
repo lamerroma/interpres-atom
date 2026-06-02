@@ -355,11 +355,10 @@ def _translate_unit(text: str, lang_from: str, lang_to: str,
         return text
     if stop_event.is_set():
         return None
-    target = lang_to if lang_to else "the target language"
-    prompt = (
-        f"Translate the following text to {target}. "
-        f"Preserve the meaning and tone. Output ONLY the translation:\n\n{text}"
-    )
+    # rinex20/translategemma3 uses anchor prefix "To <Language>:" to activate
+    # its translation subnet; this is the format it was trained on.
+    target = lang_to if lang_to else "Ukrainian"
+    prompt = f"To {target}:\n{text}"
     try:
         resp = req_lib.post(
             f"{_ollama_native_host()}/api/generate",
@@ -1789,82 +1788,47 @@ def translate(req: TranslateRequest, request: Request):
 
             yield f"data: {json.dumps({'type': 'queue', 'ahead': 0})}\n\n"
 
-            lang_to_code = LANG_MAP.get(req.lang_to, req.lang_to)
-            lang_from_code = LANG_MAP.get(req.lang_from)
-            direction = f"from {lang_from_code} into {lang_to_code}" if lang_from_code else f"into {lang_to_code}"
+            normalized = req.text.replace("\r\n", "\n")
+            paragraphs = normalized.split("\n\n")
 
             yield log_event(f"[{ts()}] URL:   {CFG['base_url']}")
             yield log_event(f"[{ts()}] Model: {CFG['model']}")
-            yield log_event(f"[{ts()}] Lang:  {direction}")
-            yield log_event(f"[{ts()}] Text:  {len(req.text)} chars")
-
-            marked = req.text.replace("\r\n", "\n").replace("\n\n", "⟨P⟩").replace("\n", "⟨N⟩")
-            tpl = req.prompt_template.strip() or CFG["prompt_template"]
-            context = req.context.strip() or "document"
-            prompt = (tpl
-                      .replace("{text}", marked)
-                      .replace("{direction}", direction)
-                      .replace("{lang}", lang_to_code)
-                      .replace("{context}", context))
-
-            system_msg = req.system_msg.strip() or CFG["system_msg"]
-            messages = [
-                {"role": "system", "content": system_msg},
-                {"role": "user", "content": prompt},
-            ]
-
-            yield log_event(f"[{ts()}] Sending request (streaming)...")
+            yield log_event(f"[{ts()}] Lang:  {req.lang_from} → {req.lang_to}")
+            yield log_event(f"[{ts()}] Text:  {len(req.text)} chars, {len(paragraphs)} paragraph(s)")
 
             try:
-                resp = req_lib.post(
-                    f"{CFG['base_url']}/chat/completions",
-                    headers={"Authorization": "Bearer dummy", "Content-Type": "application/json"},
-                    json={"model": CFG["model"], "stream": True, "max_tokens": CFG["max_tokens"], "messages": messages, "think": True},
-                    timeout=CFG["llm_timeout"],
-                    stream=True,
-                )
-                yield log_event(f"[{ts()}] HTTP {resp.status_code} — receiving tokens...")
-
-                collected = []
-                for raw_line in resp.iter_lines():
+                translated_parts: list[str] = []
+                for i, para in enumerate(paragraphs):
                     if stop_event.is_set():
-                        resp.close()
                         final_status = "stopped"
                         yield log_event(f"[{ts()}] Stopped by user")
                         yield f"data: {json.dumps({'type': 'done'})}\n\n"
                         return
-                    if not raw_line:
-                        continue
-                    line = raw_line.decode("utf-8") if isinstance(raw_line, bytes) else raw_line
-                    if not line.startswith("data: "):
-                        continue
-                    payload = line[6:]
-                    if payload.strip() == "[DONE]":
-                        break
-                    try:
-                        chunk = json.loads(payload)
-                    except json.JSONDecodeError:
-                        continue
-                    if "error" in chunk:
-                        final_error = str(chunk['error'])
-                        log.error(f"LLM error: {chunk['error']}")
-                        yield log_event(f"[{ts()}] ERROR: {chunk['error']}")
-                        yield f"data: {json.dumps({'type': 'error', 'text': 'Помилка моделі перекладу'})}\n\n"
-                        return
-                    delta = chunk.get("choices", [{}])[0].get("delta", {})
-                    thinking_token = delta.get("thinking", "")
-                    token = delta.get("content", "")
-                    if thinking_token:
-                        yield f"data: {json.dumps({'type': 'thinking', 'text': thinking_token})}\n\n"
-                    if token:
-                        collected.append(token)
-                        yield f"data: {json.dumps({'type': 'token', 'text': token})}\n\n"
 
-                raw = "".join(collected).strip()
-                result = raw.split("§")[0].strip()
-                result = result.replace("⟨P⟩", "\n\n").replace("⟨N⟩", "\n")
+                    if not para.strip():
+                        translated_parts.append(para)
+                        continue
+
+                    yield log_event(f"[{ts()}] Paragraph {i + 1}/{len(paragraphs)} — {len(para)} chars")
+                    translated = _translate_unit(
+                        para, req.lang_from, req.lang_to,
+                        "", "", "document", stop_event,
+                    )
+                    if translated is None:
+                        final_status = "stopped"
+                        yield log_event(f"[{ts()}] Stopped by user")
+                        yield f"data: {json.dumps({'type': 'done'})}\n\n"
+                        return
+
+                    translated_parts.append(translated)
+                    chunk_out = translated
+                    if i < len(paragraphs) - 1:
+                        chunk_out += "\n\n"
+                    yield f"data: {json.dumps({'type': 'token', 'text': chunk_out})}\n\n"
+
+                result = "\n\n".join(translated_parts)
                 final_status = "success"
-                yield log_event(f"[{ts()}] Done — {len(result)} chars (raw: {len(raw)})")
+                yield log_event(f"[{ts()}] Done — {len(result)} chars")
                 yield f"data: {json.dumps({'type': 'result', 'text': result})}\n\n"
 
             except req_lib.exceptions.Timeout:
