@@ -356,7 +356,10 @@ def _translate_unit(text: str, lang_from: str, lang_to: str,
     # (Open WebUI does the same; /api/generate skips the template and the
     # model was trained to expect it).
     target = lang_to if lang_to else "Ukrainian"
-    content = f"To {target}:\n{text}"
+    # Natural-language instruction matches what works for users in Open WebUI;
+    # the model card's "To <Lang>:" anchor turned out to give worse term
+    # choices than a plain "Translate to <Lang>" prompt.
+    content = f"Translate to {target}:\n\n{text}"
     try:
         resp = req_lib.post(
             f"{_ollama_native_host()}/api/chat",
