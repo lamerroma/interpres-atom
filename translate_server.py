@@ -334,26 +334,55 @@ def call_llm(messages: list, stop_event: threading.Event) -> str | None:
     return result.replace("⟨P⟩", "\n\n").replace("⟨N⟩", "\n")
 
 
+def _ollama_native_host() -> str:
+    """Strip the /v1 suffix used by OpenAI-compatible endpoint."""
+    url = CFG["base_url"].rstrip("/")
+    if url.endswith("/v1"):
+        url = url[:-3]
+    return url
+
+
 def _translate_unit(text: str, lang_from: str, lang_to: str,
                     sys_msg: str, tpl: str, ctx: str,
                     stop_event: threading.Event) -> str | None:
-    """Translate a single short piece of text (one run / one block)."""
+    """Translate a single short piece of text (one run / one block).
+
+    Uses native Ollama /api/generate with a minimal prompt — much faster than
+    the OpenAI-compatible /v1/chat/completions path with the heavy template,
+    because for short units the template was costing more tokens than the text.
+    """
     if not text or len(text.strip()) < 2:
         return text
-    lang_to_code = LANG_MAP.get(lang_to, lang_to)
-    lang_from_code = LANG_MAP.get(lang_from)
-    direction = (f"from {lang_from_code} into {lang_to_code}"
-                 if lang_from_code else f"into {lang_to_code}")
-    prompt = (tpl
-              .replace("{text}", text)
-              .replace("{direction}", direction)
-              .replace("{lang}", lang_to_code)
-              .replace("{context}", ctx))
-    messages = [
-        {"role": "system", "content": sys_msg},
-        {"role": "user", "content": prompt},
-    ]
-    return call_llm(messages, stop_event)
+    if stop_event.is_set():
+        return None
+    target = lang_to if lang_to else "the target language"
+    prompt = (
+        f"Translate the following text to {target}. "
+        f"Preserve the meaning and tone. Output ONLY the translation:\n\n{text}"
+    )
+    try:
+        resp = req_lib.post(
+            f"{_ollama_native_host()}/api/generate",
+            json={
+                "model": CFG["model"],
+                "prompt": prompt,
+                "stream": False,
+                "options": {"num_predict": CFG["max_tokens"]},
+            },
+            timeout=CFG["llm_timeout"],
+        )
+        if stop_event.is_set():
+            return None
+        if resp.status_code != 200:
+            log.warning(f"Ollama returned {resp.status_code}: {resp.text[:200]}")
+            return text
+        data = resp.json()
+        return (data.get("response") or "").strip() or text
+    except req_lib.exceptions.Timeout:
+        raise
+    except Exception as e:
+        log.warning(f"_translate_unit failed: {e}")
+        return text
 
 
 def translate_docx_bytes(content, base_name, lang_from, lang_to,
