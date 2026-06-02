@@ -65,7 +65,26 @@ ssh coyotl@192.168.88.59
 
 ---
 
-## Docker (повторний запуск Open WebUI після оновлення)
+## Docker
+
+| Дія | Команда |
+|-----|---------|
+| Версія | `docker --version` |
+| Список контейнерів | `docker ps` (запущені) / `docker ps -a` (усі) |
+| Список образів | `docker images` |
+| Логи контейнера | `docker logs <name> --tail 50` (`-f` — у real time) |
+| Зайти в контейнер | `docker exec -it <name> bash` |
+| Запустити | `docker start <name>` |
+| Зупинити | `docker stop <name>` |
+| Перезапустити | `docker restart <name>` |
+| Видалити контейнер | `docker rm <name>` (спочатку stop) |
+| Видалити образ | `docker rmi <image>` |
+| Прибрати сміття | `docker system prune -a` (видалить незадіяні образи/тома) |
+| Місце Docker | `docker system df` |
+| Статистика ресурсів | `docker stats` |
+| Глобальний статус | `sudo systemctl status docker` |
+
+**Запуск Open WebUI (якщо контейнер видалено):**
 ```bash
 docker run -d \
   --network=host \
@@ -74,6 +93,13 @@ docker run -d \
   --name open-webui \
   --restart always \
   ghcr.io/open-webui/open-webui:main
+```
+
+**Оновлення образу:**
+```bash
+docker pull ghcr.io/open-webui/open-webui:main
+docker stop open-webui && docker rm open-webui
+# повторити команду запуску вище
 ```
 
 ---
