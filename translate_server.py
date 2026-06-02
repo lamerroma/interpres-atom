@@ -405,11 +405,16 @@ def translate_docx_bytes(content, base_name, lang_from, lang_to, stop_event):
             for cell in row.cells:
                 all_paras.extend(cell.paragraphs)
 
-    runs = [r for p in all_paras for r in p.runs
-            if r.text.strip() and len(r.text.strip()) >= 2]
-    total = len(runs)
-    total_chars = sum(len(r.text) for r in runs)
-    yield ("log", f"DOCX: {total} текстових фрагментів, {total_chars} символів")
+    # Translate per paragraph, not per run. Multiple runs inside a paragraph
+    # (caused by inline formatting) sent independently to the model give
+    # incoherent output — the model has no context for fragments like "The ",
+    # "a", " word". We feed the whole paragraph and put the translated text
+    # in the first run while clearing the rest. This loses inline bold/italic
+    # within a paragraph but produces readable translation.
+    translatable = [p for p in all_paras if p.text.strip() and len(p.text.strip()) >= 2]
+    total = len(translatable)
+    total_chars = sum(len(p.text) for p in translatable)
+    yield ("log", f"DOCX: {total} абзаців, {total_chars} символів")
 
     if total == 0:
         yield ("error", "У файлі не знайдено тексту для перекладу")
@@ -424,12 +429,12 @@ def translate_docx_bytes(content, base_name, lang_from, lang_to, stop_event):
 
     yield ("meta", {"chars": total_chars, "pages": None})
 
-    for i, run in enumerate(runs, 1):
+    for i, para in enumerate(translatable, 1):
         if stop_event.is_set():
             yield ("stopped",)
             return
 
-        original = run.text.strip()
+        original = para.text.strip()
         try:
             translated = _translate_unit(original, lang_from, lang_to, stop_event)
         except Exception as e:
@@ -440,15 +445,24 @@ def translate_docx_bytes(content, base_name, lang_from, lang_to, stop_event):
             yield ("stopped",)
             return
 
-        if len(translated) > len(original) * 1.3 and run.font.size:
-            try:
-                old_pt = run.font.size.pt
-                run.font.size = Pt(old_pt - 1)
-            except Exception:
-                pass
+        runs = para.runs
+        if not runs:
+            # Paragraph without runs (rare) — create one
+            para.add_run(translated)
+        else:
+            first_run = runs[0]
+            if len(translated) > len(original) * 1.3 and first_run.font.size:
+                try:
+                    old_pt = first_run.font.size.pt
+                    first_run.font.size = Pt(old_pt - 1)
+                except Exception:
+                    pass
+            first_run.text = translated
+            # Clear remaining runs so the translation isn't duplicated
+            for r in runs[1:]:
+                r.text = ""
 
-        run.text = translated
-        yield ("progress", f"Фрагмент {i}/{total}", round(i / total * 100))
+        yield ("progress", f"Абзац {i}/{total}", round(i / total * 100))
 
     out = io.BytesIO()
     doc.save(out)
