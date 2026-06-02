@@ -352,23 +352,18 @@ def _translate_unit(text: str, lang_from: str, lang_to: str,
         return text
     if stop_event.is_set():
         return None
-    # rinex20/translategemma3 uses anchor prefix "To <Language>:" to activate
-    # its translation subnet; this is the format it was trained on.
+    # Use /api/chat so Ollama applies the model's baked-in chat template
+    # (Open WebUI does the same; /api/generate skips the template and the
+    # model was trained to expect it).
     target = lang_to if lang_to else "Ukrainian"
-    prompt = f"To {target}:\n{text}"
+    content = f"To {target}:\n{text}"
     try:
         resp = req_lib.post(
-            f"{_ollama_native_host()}/api/generate",
+            f"{_ollama_native_host()}/api/chat",
             json={
                 "model": CFG["model"],
-                "prompt": prompt,
+                "messages": [{"role": "user", "content": content}],
                 "stream": False,
-                "options": {
-                    "num_predict": CFG["max_tokens"],
-                    "num_ctx": 8192,        # rinex20/translategemma3 trained ctx
-                    "temperature": 0.1,     # model card: deterministic translations
-                    "top_p": 0.9,           # model card: focused token sampling
-                },
             },
             timeout=CFG["llm_timeout"],
         )
@@ -378,7 +373,7 @@ def _translate_unit(text: str, lang_from: str, lang_to: str,
             log.warning(f"Ollama returned {resp.status_code}: {resp.text[:200]}")
             return text
         data = resp.json()
-        return (data.get("response") or "").strip() or text
+        return (data.get("message", {}).get("content") or "").strip() or text
     except req_lib.exceptions.Timeout:
         raise
     except Exception as e:
