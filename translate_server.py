@@ -31,8 +31,6 @@ DEFAULTS = {
     "max_tokens":      2048,
     "llm_timeout":     180,
     "chunk_size":      3000,
-    "system_msg":      "You are a professional translator. Translate accurately and naturally, preserving the original tone and style.",
-    "prompt_template": "{text}\n\n§ Translate the text above {direction}. This is a {context}. Keep all ⟨P⟩ and ⟨N⟩ markers exactly in place — they mark paragraph and line breaks. Preserve technical terms, proper nouns, and numbers exactly. Do not add notes or commentary. Output ONLY the translation. §",
     "auth_user":       "admin",
     "auth_pass":       "translate",
     "max_pdf_pages":   10,
@@ -343,7 +341,6 @@ def _ollama_native_host() -> str:
 
 
 def _translate_unit(text: str, lang_from: str, lang_to: str,
-                    sys_msg: str, tpl: str, ctx: str,
                     stop_event: threading.Event) -> str | None:
     """Translate a single short piece of text (one run / one block).
 
@@ -389,8 +386,7 @@ def _translate_unit(text: str, lang_from: str, lang_to: str,
         return text
 
 
-def translate_docx_bytes(content, base_name, lang_from, lang_to,
-                         sys_msg, tpl, ctx, stop_event):
+def translate_docx_bytes(content, base_name, lang_from, lang_to, stop_event):
     """Generator. Yields ('log'|'progress'|'error'|'stopped'|'done', ...)."""
     try:
         from docx import Document
@@ -437,8 +433,7 @@ def translate_docx_bytes(content, base_name, lang_from, lang_to,
 
         original = run.text.strip()
         try:
-            translated = _translate_unit(original, lang_from, lang_to,
-                                         sys_msg, tpl, ctx, stop_event)
+            translated = _translate_unit(original, lang_from, lang_to, stop_event)
         except Exception as e:
             yield ("error", f"Помилка перекладу: {e}")
             return
@@ -465,8 +460,7 @@ def translate_docx_bytes(content, base_name, lang_from, lang_to,
            out.getvalue())
 
 
-def translate_pdf_bytes(content, base_name, lang_from, lang_to,
-                        sys_msg, tpl, ctx, stop_event):
+def translate_pdf_bytes(content, base_name, lang_from, lang_to, stop_event):
     try:
         import fitz
     except ImportError:
@@ -533,8 +527,7 @@ def translate_pdf_bytes(content, base_name, lang_from, lang_to,
                 return
 
             try:
-                translated = _translate_unit(text, lang_from, lang_to,
-                                             sys_msg, tpl, ctx, stop_event)
+                translated = _translate_unit(text, lang_from, lang_to, stop_event)
             except Exception as e:
                 doc.close()
                 yield ("error", f"Помилка перекладу: {e}")
@@ -568,9 +561,8 @@ def translate_pdf_bytes(content, base_name, lang_from, lang_to,
            out.getvalue())
 
 
-def translate_txt_bytes(content, base_name, lang_from, lang_to,
-                        sys_msg, tpl, ctx, stop_event):
-    """Chunk-based translation (used for .txt and fallback)."""
+def translate_txt_bytes(content, base_name, lang_from, lang_to, stop_event):
+    """Per-paragraph TXT translation."""
     try:
         text = content.decode("utf-8", errors="replace")
     except Exception as e:
@@ -584,40 +576,27 @@ def translate_txt_bytes(content, base_name, lang_from, lang_to,
                f"(максимум {max_chars})")
         return
 
-    chunks = split_chunks(text)
-    total = len(chunks)
-    yield ("log", f"TXT: {total} частин, {len(text)} символів")
-
-    if total == 0:
+    if not text.strip():
         yield ("error", "Файл порожній")
         return
 
+    paragraphs = text.replace("\r\n", "\n").split("\n\n")
+    total = len(paragraphs)
+    yield ("log", f"TXT: {total} абзаців, {len(text)} символів")
     yield ("meta", {"chars": len(text), "pages": None})
 
-    lang_to_code = LANG_MAP.get(lang_to, lang_to)
-    lang_from_code = LANG_MAP.get(lang_from)
-    direction = (f"from {lang_from_code} into {lang_to_code}"
-                 if lang_from_code else f"into {lang_to_code}")
-
-    translated_chunks = []
-    for i, chunk in enumerate(chunks, 1):
+    translated_parts = []
+    for i, para in enumerate(paragraphs, 1):
         if stop_event.is_set():
             yield ("stopped",)
             return
 
-        marked = chunk.replace("\r\n", "\n").replace("\n\n", "⟨P⟩").replace("\n", "⟨N⟩")
-        prompt = (tpl
-                  .replace("{text}", marked)
-                  .replace("{direction}", direction)
-                  .replace("{lang}", lang_to_code)
-                  .replace("{context}", ctx))
-        messages = [
-            {"role": "system", "content": sys_msg},
-            {"role": "user", "content": prompt},
-        ]
+        if not para.strip():
+            translated_parts.append(para)
+            continue
 
         try:
-            result = call_llm(messages, stop_event)
+            result = _translate_unit(para, lang_from, lang_to, stop_event)
         except Exception as e:
             yield ("error", str(e))
             return
@@ -626,10 +605,10 @@ def translate_txt_bytes(content, base_name, lang_from, lang_to,
             yield ("stopped",)
             return
 
-        translated_chunks.append(result)
-        yield ("progress", f"Частина {i}/{total}", round(i / total * 100))
+        translated_parts.append(result)
+        yield ("progress", f"Абзац {i}/{total}", round(i / total * 100))
 
-    final = "\n\n".join(translated_chunks)
+    final = "\n\n".join(translated_parts)
     yield ("done",
            f"{base_name}_translated.txt",
            "text/plain; charset=utf-8",
@@ -1129,24 +1108,6 @@ ADMIN_HTML = r"""<!DOCTYPE html>
     </div>
   </div>
 
-  <details>
-    <summary>Додатково (перевизначення для цього запиту)</summary>
-    <div style="margin-top:8px; display:flex; flex-direction:column; gap:10px;">
-      <div>
-        <label>Тип документу (необов'язково)</label>
-        <input type="text" id="context" placeholder="напр. технічний посібник, юридичний договір, медичний звіт">
-      </div>
-      <div>
-        <label>Системне повідомлення</label>
-        <textarea id="system_msg" rows="2"></textarea>
-      </div>
-      <div>
-        <label>Шаблон промпту</label>
-        <textarea id="prompt_tpl" rows="4"></textarea>
-        <div class="hint">Плейсхолдери: <b>{text}</b>, <b>{lang}</b>, <b>{context}</b></div>
-      </div>
-    </div>
-  </details>
 </div>
 
 <!-- Text translation -->
@@ -1274,15 +1235,6 @@ ADMIN_HTML = r"""<!DOCTYPE html>
         <input type="number" id="cfg_max_chars" min="1000" max="1000000" step="1000">
       </div>
       <div></div>
-      <div class="full">
-        <label>Системне повідомлення за замовчуванням</label>
-        <textarea id="cfg_system_msg" rows="2"></textarea>
-      </div>
-      <div class="full">
-        <label>Шаблон промпту за замовчуванням</label>
-        <textarea id="cfg_prompt_template" rows="4"></textarea>
-        <div class="hint">Плейсхолдери: <b>{text}</b>, <b>{direction}</b>, <b>{lang}</b>, <b>{context}</b> — <b>{direction}</b> = "from de into uk" або "into uk" при автовизначенні</div>
-      </div>
     </div>
     <div class="btn-row" style="margin-top:12px">
       <button class="btn-save" onclick="saveSettings()">Зберегти</button>
@@ -1304,11 +1256,6 @@ async function loadSettings() {
   document.getElementById('cfg_chunk_size').value      = cfg.chunk_size      ?? 3000;
   document.getElementById('cfg_max_pdf_pages').value   = cfg.max_pdf_pages   ?? 10;
   document.getElementById('cfg_max_chars').value       = cfg.max_chars       ?? 30000;
-  document.getElementById('cfg_system_msg').value      = cfg.system_msg      ?? '';
-  document.getElementById('cfg_prompt_template').value = cfg.prompt_template ?? '';
-  // populate per-request overrides with current defaults
-  document.getElementById('system_msg').value  = cfg.system_msg      ?? '';
-  document.getElementById('prompt_tpl').value  = cfg.prompt_template ?? '';
 }
 
 async function saveSettings() {
@@ -1320,8 +1267,6 @@ async function saveSettings() {
     chunk_size:      parseInt(document.getElementById('cfg_chunk_size').value),
     max_pdf_pages:   parseInt(document.getElementById('cfg_max_pdf_pages').value),
     max_chars:       parseInt(document.getElementById('cfg_max_chars').value),
-    system_msg:      document.getElementById('cfg_system_msg').value,
-    prompt_template: document.getElementById('cfg_prompt_template').value,
   };
   const st = document.getElementById('cfg-status');
   try {
@@ -1343,8 +1288,6 @@ async function resetSettings() {
   document.getElementById('cfg_chunk_size').value      = cfg.chunk_size;
   document.getElementById('cfg_max_pdf_pages').value   = cfg.max_pdf_pages;
   document.getElementById('cfg_max_chars').value       = cfg.max_chars;
-  document.getElementById('cfg_system_msg').value      = cfg.system_msg;
-  document.getElementById('cfg_prompt_template').value = cfg.prompt_template;
 }
 
 // ── Text translation ──────────────────────────────────────────────────
@@ -1437,9 +1380,6 @@ async function doTranslate() {
         text,
         lang_from: document.getElementById('lang_from').value,
         lang_to: document.getElementById('lang_to').value,
-        prompt_template: document.getElementById('prompt_tpl').value,
-        system_msg: document.getElementById('system_msg').value,
-        context: document.getElementById('context').value || 'document',
       }),
     });
 
@@ -1553,9 +1493,6 @@ async function doTranslateFile() {
   formData.append('file', _selectedFile, _selectedFile.name);
   formData.append('lang_from', document.getElementById('lang_from').value);
   formData.append('lang_to', document.getElementById('lang_to').value);
-  formData.append('system_msg', document.getElementById('system_msg').value);
-  formData.append('prompt_template', document.getElementById('prompt_tpl').value);
-  formData.append('context', document.getElementById('context').value || 'document');
 
   try {
     const response = await fetch('/translate-file', {
@@ -1677,9 +1614,6 @@ class TranslateRequest(BaseModel):
     text: str
     lang_from: str = "auto"
     lang_to: str
-    prompt_template: str = ""
-    system_msg: str = ""
-    context: str = "document"
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -1816,8 +1750,7 @@ def translate(req: TranslateRequest, request: Request):
 
                     yield log_event(f"[{ts()}] Paragraph {i + 1}/{len(paragraphs)} — {len(para)} chars")
                     translated = _translate_unit(
-                        para, req.lang_from, req.lang_to,
-                        "", "", "document", stop_event,
+                        para, req.lang_from, req.lang_to, stop_event,
                     )
                     if translated is None:
                         final_status = "stopped"
@@ -1875,9 +1808,6 @@ async def translate_file_endpoint(
     file: UploadFile = File(...),
     lang_from: str = Form("auto"),
     lang_to: str = Form("Ukrainian"),
-    system_msg: str = Form(""),
-    prompt_template: str = Form(""),
-    context: str = Form("document"),
 ):
     content = await file.read()
     filename = file.filename or "file.txt"
@@ -1905,19 +1835,12 @@ async def translate_file_endpoint(
             yield f"data: {json.dumps({'type': 'id', 'text': request_id})}\n\n"
             yield log_event(f"File: {filename} ({len(content)} bytes)")
 
-            tpl = prompt_template.strip() or CFG["prompt_template"]
-            ctx = context.strip() or "document"
-            sys_msg = system_msg.strip() or CFG["system_msg"]
-
             if ext == "docx":
-                it = translate_docx_bytes(content, base, lang_from, lang_to,
-                                          sys_msg, tpl, ctx, stop_event)
+                it = translate_docx_bytes(content, base, lang_from, lang_to, stop_event)
             elif ext == "pdf":
-                it = translate_pdf_bytes(content, base, lang_from, lang_to,
-                                         sys_msg, tpl, ctx, stop_event)
+                it = translate_pdf_bytes(content, base, lang_from, lang_to, stop_event)
             else:
-                it = translate_txt_bytes(content, base, lang_from, lang_to,
-                                         sys_msg, tpl, ctx, stop_event)
+                it = translate_txt_bytes(content, base, lang_from, lang_to, stop_event)
 
             try:
                 for event in it:
