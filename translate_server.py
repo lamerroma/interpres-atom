@@ -645,6 +645,73 @@ def _docx_collect_paragraphs(doc):
             yield from _from_element(part.element, part)
 
 
+def _translate_json_segments(batch: dict, lang_to: str,
+                              stop_event: threading.Event) -> dict:
+    """Translate a batch of text segments via JSON.
+
+    Sends {"1": "text1", "2": "text2", ...} to the LLM, expects back a JSON
+    object with the same keys and translated values.  On any failure, returns
+    the original texts so the document still saves cleanly.
+    """
+    if stop_event.is_set():
+        return batch
+
+    json_input = json.dumps(batch, ensure_ascii=False)
+    prompt = (
+        f"Translate each JSON value into {lang_to}. "
+        "Return ONLY a valid JSON object with exactly the same keys and translated values. "
+        "Do not add commentary.\n\n"
+        f"{json_input}"
+    )
+
+    try:
+        resp = req_lib.post(
+            f"{_ollama_native_host()}/api/chat",
+            json={
+                "model": CFG["model"],
+                "messages": [{"role": "user", "content": prompt}],
+                "stream": False,
+            },
+            timeout=CFG["llm_timeout"],
+        )
+        if stop_event.is_set():
+            return batch
+        if resp.status_code != 200:
+            log.warning(f"_translate_json_segments HTTP {resp.status_code}")
+            return batch
+        content = (resp.json().get("message", {}).get("content") or "").strip()
+
+        # Strip markdown code fences if present
+        for fence in ("```json", "```"):
+            if content.startswith(fence):
+                content = content[len(fence):]
+                break
+        if content.endswith("```"):
+            content = content[:-3]
+        content = content.strip()
+
+        parsed = json.loads(content)
+
+        # Accept either {"1": "text"} or [{"id": "1", "t": "text"}]
+        if isinstance(parsed, list):
+            result = {str(item["id"]): item.get("t", "") for item in parsed
+                      if isinstance(item, dict) and "id" in item}
+        elif isinstance(parsed, dict):
+            result = {str(k): str(v) for k, v in parsed.items()}
+        else:
+            return batch
+
+        # Fill in any missing keys with original text
+        for k in batch:
+            if k not in result or not result[k].strip():
+                result[k] = batch[k]
+        return result
+
+    except Exception as e:
+        log.warning(f"_translate_json_segments failed: {e}")
+        return batch
+
+
 def translate_docx_bytes(content, base_name, lang_from, lang_to, stop_event):
     """Generator. Yields ('log'|'progress'|'error'|'stopped'|'done', ...)."""
     try:
@@ -659,22 +726,22 @@ def translate_docx_bytes(content, base_name, lang_from, lang_to, stop_event):
         yield ("error", f"Не вдалось відкрити DOCX: {e}")
         return
 
-    # Collect all paragraphs with their formatting segments
-    para_jobs = []  # list of (para, segments) where segments = [(runs, text), ...]
+    # Collect ALL segments across the entire document with global IDs.
+    # all_segs: list of (str_id, runs_list, original_text)
+    all_segs = []
     total_chars = 0
     for para in _docx_collect_paragraphs(doc):
         if not para.text.strip():
             continue
-        segments = _docx_collect_segments(para)
-        if not segments:
-            continue
-        para_jobs.append((para, segments))
-        total_chars += sum(len(t) for _, t in segments)
+        for runs, text in _docx_collect_segments(para):
+            seg_id = str(len(all_segs) + 1)
+            all_segs.append((seg_id, runs, text))
+            total_chars += len(text)
 
-    total = len(para_jobs)
-    yield ("log", f"DOCX: {total} абзаців, {total_chars} символів")
+    total_segs = len(all_segs)
+    yield ("log", f"DOCX: {total_segs} сегментів, {total_chars} символів")
 
-    if total == 0:
+    if total_segs == 0:
         yield ("error", "У файлі не знайдено тексту для перекладу")
         return
 
@@ -687,48 +754,48 @@ def translate_docx_bytes(content, base_name, lang_from, lang_to, stop_event):
 
     yield ("meta", {"chars": total_chars, "pages": None})
 
-    for i, (para, segments) in enumerate(para_jobs, 1):
+    target_lang = lang_to if lang_to else "Ukrainian"
+    chunk_size = CFG.get("chunk_size", 3000)
+
+    # Split segments into batches by chunk_size characters.
+    batches = []
+    current_batch = {}
+    current_chars = 0
+    for seg_id, runs, text in all_segs:
+        if current_chars + len(text) > chunk_size and current_batch:
+            batches.append(current_batch)
+            current_batch = {}
+            current_chars = 0
+        current_batch[seg_id] = text
+        current_chars += len(text)
+    if current_batch:
+        batches.append(current_batch)
+
+    yield ("log", f"DOCX: {len(batches)} батчів для перекладу")
+
+    # Build a lookup for fast run access
+    seg_runs = {seg_id: runs for seg_id, runs, _ in all_segs}
+
+    translated_count = 0
+    for batch_idx, batch in enumerate(batches, 1):
         if stop_event.is_set():
             yield ("stopped",)
             return
 
-        # Translate the full paragraph text for context, then map back to segments.
-        # If the paragraph has only one segment, we translate it directly.
-        # If multiple segments (different inline formats), we translate the whole
-        # paragraph text and distribute proportionally by segment length.
-        full_text = ' '.join(t for _, t in segments)
+        translations = _translate_json_segments(batch, target_lang, stop_event)
 
-        try:
-            translated_full = _translate_unit(full_text, lang_from, lang_to, stop_event)
-        except Exception as e:
-            yield ("error", f"Помилка перекладу абзацу {i}: {e}")
-            return
-
-        if translated_full is None:
+        if stop_event.is_set():
             yield ("stopped",)
             return
 
-        if len(segments) == 1:
-            _docx_apply_to_segment(segments[0][0], translated_full)
-        else:
-            # Distribute translated text across segments proportionally.
-            # Split at whitespace boundaries to keep words intact.
-            words = translated_full.split()
-            total_orig_len = sum(len(t) for _, t in segments)
-            word_idx = 0
-            for seg_i, (runs, orig_text) in enumerate(segments):
-                if seg_i == len(segments) - 1:
-                    # Last segment gets all remaining words
-                    seg_words = words[word_idx:]
-                else:
-                    ratio = len(orig_text) / total_orig_len
-                    count = max(1, round(len(words) * ratio))
-                    seg_words = words[word_idx:word_idx + count]
-                    word_idx += count
-                seg_text = ' '.join(seg_words) if seg_words else orig_text
-                _docx_apply_to_segment(runs, seg_text)
+        for seg_id, translated_text in translations.items():
+            runs = seg_runs.get(seg_id)
+            if runs:
+                _docx_apply_to_segment(runs, translated_text)
+        translated_count += len(batch)
 
-        yield ("progress", f"Абзац {i}/{total}", round(i / total * 100))
+        pct = round(translated_count / total_segs * 100)
+        yield ("progress", f"Батч {batch_idx}/{len(batches)}", pct)
 
     out = io.BytesIO()
     doc.save(out)
