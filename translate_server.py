@@ -1045,7 +1045,11 @@ USER_HTML = r"""<!DOCTYPE html>
   .download-link { background: var(--success); display: none; }
   .download-link:hover { background: var(--success-hover); }
   .download-link.visible { display: inline-flex; }
-  button.preview-btn { background: #7c3aed; display: none; }
+  button.preview-btn {
+    background: #7c3aed; color: white; border: none; border-radius: 8px;
+    padding: 11px 22px; font-size: 0.95rem; font-weight: 500; cursor: pointer;
+    transition: background 0.15s; display: none; align-items: center; gap: 6px;
+  }
   button.preview-btn:hover { background: #6d28d9; }
   button.preview-btn.visible { display: inline-flex; }
 
