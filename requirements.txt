@@ -6,3 +6,4 @@ python-docx
 python-multipart
 pymupdf
 mammoth
+html2text
