@@ -384,6 +384,59 @@ def _translate_unit(text: str, lang_from: str, lang_to: str,
         return text
 
 
+def _translate_html_nodes(html: str, lang_from: str, lang_to: str,
+                          stop_event: threading.Event) -> str:
+    """Translate HTML content preserving all tags — only text nodes are translated.
+
+    Strategy: collect all text nodes, join with unique markers ⟦N⟧, send as
+    one batch to Ollama, then split by markers and put back into HTML structure.
+    """
+    from html.parser import HTMLParser
+
+    parts = []  # list of ('tag'|'text'|'ws', str)
+
+    class _Parser(HTMLParser):
+        def handle_starttag(self, tag, attrs):
+            parts.append(('tag', self.get_starttag_text()))
+        def handle_endtag(self, tag):
+            parts.append(('tag', f'</{tag}>'))
+        def handle_data(self, data):
+            if data.strip():
+                parts.append(('text', data))
+            else:
+                parts.append(('tag', data))
+        def handle_entityref(self, name):
+            parts.append(('tag', f'&{name};'))
+        def handle_charref(self, name):
+            parts.append(('tag', f'&#{name};'))
+
+    _Parser().feed(html)
+
+    text_indices = [i for i, (t, _) in enumerate(parts) if t == 'text']
+    if not text_indices:
+        return html
+
+    # Build batch: ⟦0⟧first text⟦1⟧second text...
+    batch = ''.join(f'⟦{i}⟧{parts[i][1]}' for i in text_indices)
+
+    translated = _translate_unit(batch, lang_from, lang_to, stop_event)
+    if not translated:
+        return html
+
+    # Extract translated pieces back using markers
+    for idx in text_indices:
+        marker = f'⟦{idx}⟧'
+        start = translated.find(marker)
+        if start == -1:
+            continue
+        start += len(marker)
+        next_marker = translated.find('⟦', start)
+        end = next_marker if next_marker != -1 else len(translated)
+        parts[idx] = ('text', translated[start:end])
+
+    return ''.join(content for _, content in parts)
+
+
 # ── DOCX translation helpers ─────────────────────────────────────────────────
 
 def _docx_significant_styles(run):
@@ -868,6 +921,44 @@ USER_HTML = r"""<!DOCTYPE html>
   textarea:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-light); }
   textarea[readonly] { background: #f1f5f9; }
 
+  .rich-editor {
+    width: 100%; padding: 14px; border: 1px solid var(--border); border-radius: 8px;
+    font-size: 0.95rem; font-family: inherit; min-height: 140px; max-height: 400px;
+    line-height: 1.6; background: var(--card); color: var(--text);
+    overflow-y: auto; box-sizing: border-box; outline: none;
+  }
+  .rich-editor:focus { border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-light); }
+  .rich-editor[contenteditable=true]:empty:before {
+    content: attr(data-placeholder); color: #aaa; pointer-events: none;
+  }
+  .rich-editor b, .rich-editor strong { font-weight: bold; }
+  .rich-editor i, .rich-editor em { font-style: italic; }
+  .rich-editor u { text-decoration: underline; }
+  .rich-editor h1, .rich-editor h2, .rich-editor h3 { margin: 0.3em 0; font-weight: bold; }
+  .rich-editor h1 { font-size: 1.4em; }
+  .rich-editor h2 { font-size: 1.2em; }
+  .rich-editor h3 { font-size: 1.05em; }
+  .rich-editor ul, .rich-editor ol { margin: 4px 0 4px 20px; padding: 0; }
+  .rich-editor table { border-collapse: collapse; width: 100%; margin: 4px 0; }
+  .rich-editor td, .rich-editor th { border: 1px solid var(--border); padding: 4px 8px; }
+
+  .result-content {
+    width: 100%; padding: 14px; border: 1px solid var(--border); border-radius: 8px;
+    font-size: 0.95rem; font-family: inherit; min-height: 80px;
+    line-height: 1.6; background: #f1f5f9; color: var(--text);
+    box-sizing: border-box; overflow-y: auto;
+  }
+  .result-content b, .result-content strong { font-weight: bold; }
+  .result-content i, .result-content em { font-style: italic; }
+  .result-content u { text-decoration: underline; }
+  .result-content h1, .result-content h2, .result-content h3 { margin: 0.3em 0; font-weight: bold; }
+  .result-content h1 { font-size: 1.4em; }
+  .result-content h2 { font-size: 1.2em; }
+  .result-content h3 { font-size: 1.05em; }
+  .result-content ul, .result-content ol { margin: 4px 0 4px 20px; padding: 0; }
+  .result-content table { border-collapse: collapse; width: 100%; margin: 4px 0; }
+  .result-content td, .result-content th { border: 1px solid var(--border); padding: 4px 8px; }
+
   .drop-zone {
     border: 2px dashed var(--border); border-radius: 10px; padding: 40px 20px;
     text-align: center; cursor: pointer; transition: all 0.15s; background: var(--card);
@@ -942,7 +1033,8 @@ USER_HTML = r"""<!DOCTYPE html>
     </div>
 
     <div id="panel-text" class="panel active">
-      <textarea id="input" placeholder="Введіть текст для перекладу..."></textarea>
+      <div id="input" class="rich-editor" contenteditable="true" spellcheck="false"
+           data-gramm="false" data-placeholder="Введіть текст для перекладу..."></div>
       <div class="actions">
         <button id="btn-translate" class="primary" onclick="doTranslate()">Перекласти</button>
         <button id="btn-stop" class="stop" onclick="doStop()">Зупинити</button>
@@ -971,7 +1063,7 @@ USER_HTML = r"""<!DOCTYPE html>
 
   <div class="card" id="result-card" style="display:none">
     <div class="result-label">Результат</div>
-    <textarea id="result" readonly></textarea>
+    <div id="result" class="result-content"></div>
   </div>
 
   <div class="footer">
@@ -1032,7 +1124,9 @@ let _textRequestId = null;
 let _textTokens = '';
 
 async function doTranslate() {
-  const text = document.getElementById('input').value.trim();
+  const inputEl = document.getElementById('input');
+  const html = inputEl.innerHTML.trim();
+  const text = inputEl.textContent.trim();
   if (!text) { setStatus('text-status', 'Введіть текст', 'error'); return; }
 
   setWorking('text', true);
@@ -1042,12 +1136,12 @@ async function doTranslate() {
   _textController = new AbortController();
 
   try {
-    const resp = await fetch('/translate', {
+    const resp = await fetch('/translate-html', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       signal: _textController.signal,
       body: JSON.stringify({
-        text,
+        html,
         lang_from: document.getElementById('lang_from').value,
         lang_to: document.getElementById('lang_to').value,
       }),
@@ -1087,8 +1181,12 @@ async function doTranslate() {
 
 function showResult(text) {
   document.getElementById('result-card').style.display = 'block';
-  document.getElementById('result').value = text;
+  document.getElementById('result').innerHTML = text;
 }
+
+document.getElementById('input').addEventListener('keydown', function(e) {
+  if (e.ctrlKey && e.key === 'Enter') doTranslate();
+});
 
 async function doStop() {
   if (_textController) { _textController.abort(); _textController = null; }
@@ -1785,6 +1883,12 @@ class TranslateRequest(BaseModel):
     lang_to: str
 
 
+class TranslateHtmlRequest(BaseModel):
+    html: str
+    lang_from: str = "auto"
+    lang_to: str
+
+
 @app.get("/", response_class=HTMLResponse)
 def index():
     return USER_HTML
@@ -1949,6 +2053,90 @@ def translate(req: TranslateRequest, request: Request):
                 duration=round(time.time() - started, 2),
                 status=final_status,
                 error=final_error,
+            )
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
+
+
+@app.post("/translate-html")
+def translate_html(req: TranslateHtmlRequest, request: Request):
+    """Translate HTML preserving formatting tags — text nodes only."""
+    global _ticket_issued
+    request_id = str(uuid.uuid4())
+    stop_event = threading.Event()
+    _active[request_id] = stop_event
+    client_ip = request.client.host if request.client else None
+
+    start_evt = threading.Event()
+    done_evt = threading.Event()
+    with _ticket_lock:
+        _ticket_issued += 1
+        my_ticket = _ticket_issued
+    _job_queue.put((start_evt, done_evt))
+
+    def generate():
+        def log_event(msg):
+            return f"data: {json.dumps({'type': 'log', 'text': msg})}\n\n"
+        def ts():
+            return datetime.datetime.now().strftime("%H:%M:%S")
+
+        started = time.time()
+        final_status = "error"
+        final_error = None
+
+        try:
+            yield f"data: {json.dumps({'type': 'id', 'text': request_id})}\n\n"
+
+            max_chars = CFG.get("max_chars", 30000)
+            if len(req.html) > max_chars:
+                msg = f"Текст занадто довгий: {len(req.html)} символів (максимум {max_chars})"
+                yield f"data: {json.dumps({'type': 'error', 'text': msg})}\n\n"
+                yield f"data: {json.dumps({'type': 'done'})}\n\n"
+                return
+
+            while not start_evt.wait(timeout=2):
+                if stop_event.is_set():
+                    yield f"data: {json.dumps({'type': 'done'})}\n\n"
+                    return
+                with _ticket_lock:
+                    ahead = my_ticket - _ticket_serving
+                if ahead > 0:
+                    yield f"data: {json.dumps({'type': 'queue', 'ahead': ahead})}\n\n"
+
+            yield f"data: {json.dumps({'type': 'queue', 'ahead': 0})}\n\n"
+            yield log_event(f"[{ts()}] HTML translation: {len(req.html)} bytes")
+
+            try:
+                translated_html = _translate_html_nodes(
+                    req.html, req.lang_from, req.lang_to, stop_event
+                )
+                if translated_html is None:
+                    final_status = "stopped"
+                    yield f"data: {json.dumps({'type': 'done'})}\n\n"
+                    return
+
+                final_status = "success"
+                yield log_event(f"[{ts()}] Done — {len(translated_html)} bytes")
+                yield f"data: {json.dumps({'type': 'result', 'text': translated_html})}\n\n"
+
+            except req_lib.exceptions.Timeout:
+                final_error = "Timeout"
+                yield f"data: {json.dumps({'type': 'error', 'text': 'Сервер не встиг відповісти.'})}\n\n"
+            except Exception as e:
+                final_error = str(e)
+                log.error(f"HTML translation error: {e}\n{traceback.format_exc()}")
+                yield f"data: {json.dumps({'type': 'error', 'text': 'Помилка сервера.'})}\n\n"
+
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+        finally:
+            done_evt.set()
+            _active.pop(request_id, None)
+            log_stat(
+                ip=client_ip, kind="text", filename=None, file_ext=None,
+                lang_from=req.lang_from, lang_to=req.lang_to,
+                chars=len(req.html), pages=None,
+                duration=round(time.time() - started, 2),
+                status=final_status, error=final_error,
             )
 
     return StreamingResponse(generate(), media_type="text/event-stream")
