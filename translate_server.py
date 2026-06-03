@@ -893,6 +893,7 @@ USER_HTML = r"""<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Перекладач</title>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   :root {
@@ -1247,8 +1248,7 @@ async function doTranslate() {
           resultEl.textContent = _textTokens;
         }
         else if (evt.type === 'result') {
-          // Final result: replace with formatted HTML
-          showResult(evt.text);
+          showResult(evt.text, evt.format);
           setStatus('text-status', 'Готово', 'success');
         }
         else if (evt.type === 'error') {
@@ -1264,10 +1264,14 @@ async function doTranslate() {
   _textRequestId = null;
 }
 
-function showResult(html) {
+function showResult(text, format) {
   const resultEl = document.getElementById('result');
   resultEl.classList.remove('streaming');
-  resultEl.innerHTML = html;
+  if (format === 'markdown' && typeof marked !== 'undefined') {
+    resultEl.innerHTML = marked.parse(text);
+  } else {
+    resultEl.innerHTML = text;
+  }
 }
 
 document.getElementById('input').addEventListener('keydown', function(e) {
@@ -2194,7 +2198,6 @@ def translate_html(req: TranslateHtmlRequest, request: Request):
 
             try:
                 import html2text as h2t
-                import markdown as md_lib
 
                 # Convert HTML → Markdown (like TipTap does in OpenWebUI)
                 converter = h2t.HTML2Text()
@@ -2228,14 +2231,10 @@ def translate_html(req: TranslateHtmlRequest, request: Request):
                     yield f"data: {json.dumps({'type': 'done'})}\n\n"
                     return
 
-                # Convert translated Markdown → HTML for display
-                translated_html = md_lib.markdown(
-                    translated_md,
-                    extensions=['tables', 'fenced_code']
-                )
                 final_status = "success"
-                yield log_event(f"[{ts()}] Done — {len(translated_html)} bytes")
-                yield f"data: {json.dumps({'type': 'result', 'text': translated_html})}\n\n"
+                yield log_event(f"[{ts()}] Done — {len(translated_md)} chars")
+                # Send Markdown — frontend renders it via marked.js (like OpenWebUI)
+                yield f"data: {json.dumps({'type': 'result', 'text': translated_md, 'format': 'markdown'})}\n\n"
 
             except req_lib.exceptions.Timeout:
                 final_error = "Timeout"
