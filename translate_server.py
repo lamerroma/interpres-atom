@@ -1256,8 +1256,18 @@ USER_HTML = r"""<!DOCTYPE html>
   <div class="footer">
     <a href="/admin">Адміністрування</a>
     <span style="margin: 0 12px; color: var(--border);">|</span>
-    <span>v1.6</span>
+    <span>v1.9</span>
   </div>
+</div>
+
+<!-- Preview modal — must be in DOM before <script> runs -->
+<div id="preview-modal">
+  <div id="preview-toolbar">
+    <span id="preview-title">Перегляд перекладу</span>
+    <button id="btn-preview-pdf" onclick="savePdf()">&#128438; Зберегти PDF</button>
+    <button id="btn-preview-close" onclick="closePreview()">&#10005; Закрити</button>
+  </div>
+  <iframe id="preview-iframe" sandbox="allow-same-origin allow-scripts"></iframe>
 </div>
 
 <script>
@@ -1679,16 +1689,6 @@ document.getElementById('input').addEventListener('keydown', e => {
   if (e.ctrlKey && e.key === 'Enter') doTranslate();
 });
 </script>
-
-<!-- Preview modal -->
-<div id="preview-modal">
-  <div id="preview-toolbar">
-    <span id="preview-title">Перегляд перекладу</span>
-    <button id="btn-preview-pdf" onclick="savePdf()">&#128438; Зберегти PDF</button>
-    <button id="btn-preview-close" onclick="closePreview()">&#10005; Закрити</button>
-  </div>
-  <iframe id="preview-iframe" sandbox="allow-same-origin allow-scripts"></iframe>
-</div>
 </body>
 </html>"""
 
