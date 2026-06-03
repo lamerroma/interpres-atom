@@ -1163,9 +1163,7 @@ USER_HTML = r"""<!DOCTYPE html>
       <div class="conn-status">
         <span class="conn-dot" id="conn-dot"></span>
         <span id="conn-text">Перевірка...</span>
-      </div>
-      <div class="conn-status">
-        <span id="model-name" style="font-size:.82rem; color:var(--muted);">—</span>
+        <span id="model-name" style="display:none;">· використовується мовна модель <strong id="model-name-val"></strong></span>
       </div>
     </div>
   </div>
@@ -1616,23 +1614,27 @@ async function doFileStop() {
 
 // ── Models & connection status ─────────────────────────────────────────
 async function loadModels() {
-  const dot   = document.getElementById('conn-dot');
-  const txt   = document.getElementById('conn-text');
-  const label = document.getElementById('model-name');
+  const dot      = document.getElementById('conn-dot');
+  const txt      = document.getElementById('conn-text');
+  const modelRow = document.getElementById('model-name');
+  const modelVal = document.getElementById('model-name-val');
   try {
     const r    = await fetch('/models');
     const data = await r.json();
     if (data.ok && data.models.length > 0) {
       dot.className = 'conn-dot ok';
       txt.textContent = 'Ollama підключена';
+      modelVal.textContent = data.current || '—';
+      modelRow.style.display = '';
     } else {
       dot.className = 'conn-dot err';
       txt.textContent = 'Ollama недоступна';
+      modelRow.style.display = 'none';
     }
-    label.textContent = data.current || '—';
   } catch (e) {
     dot.className = 'conn-dot err';
     txt.textContent = "Помилка з'єднання";
+    modelRow.style.display = 'none';
   }
 }
 
