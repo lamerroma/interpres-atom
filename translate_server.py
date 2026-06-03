@@ -497,12 +497,14 @@ def _translate_unit_streaming(text: str, lang_from: str, lang_to: str,
 
 
 def _translate_json_segments(batch: dict, lang_to: str,
-                              stop_event: threading.Event) -> dict:
+                              stop_event: threading.Event,
+                              token_stats: dict | None = None) -> dict:
     """Translate a batch of text segments via JSON.
 
     Sends {"1": "text1", "2": "text2", ...} to the LLM, expects back a JSON
     object with the same keys and translated values.  On any failure, returns
     the original texts so the document still saves cleanly.
+    If token_stats dict is provided, accumulates prompt_eval_count / eval_count.
     """
     if stop_event.is_set():
         return batch
@@ -530,7 +532,14 @@ def _translate_json_segments(batch: dict, lang_to: str,
         if resp.status_code != 200:
             log.warning(f"_translate_json_segments HTTP {resp.status_code}")
             return batch
-        content = (resp.json().get("message", {}).get("content") or "").strip()
+
+        data = resp.json()
+
+        if token_stats is not None:
+            token_stats["tok_in"] = token_stats.get("tok_in", 0) + data.get("prompt_eval_count", 0)
+            token_stats["tok_out"] = token_stats.get("tok_out", 0) + data.get("eval_count", 0)
+
+        content = (data.get("message", {}).get("content") or "").strip()
 
         # Strip markdown code fences if present
         for fence in ("```json", "```"):
@@ -605,11 +614,11 @@ def translate_docx_bytes(content, base_name, lang_from, lang_to, stop_event):
     n_batches = max(1, -(-total_chars // chunk_size))  # ceil division
     yield ("log", f"DOCX: ~{n_batches} батчів для перекладу")
 
-    # Wrap _translate_json_segments with progress reporting via a counter
+    token_stats = {"tok_in": 0, "tok_out": 0}
     batch_counter = [0]
 
     def translate_batch_with_progress(batch, lang, stop_ev):
-        result = _translate_json_segments(batch, lang, stop_ev)
+        result = _translate_json_segments(batch, lang, stop_ev, token_stats=token_stats)
         batch_counter[0] += 1
         return result
 
@@ -632,7 +641,8 @@ def translate_docx_bytes(content, base_name, lang_from, lang_to, stop_event):
         yield ("stopped",)
         return
 
-    yield ("progress", f"Завершено", 100)
+    yield ("progress", "Завершено", 100)
+    yield ("stats", token_stats["tok_in"], token_stats["tok_out"])
     yield ("done",
            f"{base_name}_translated.docx",
            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -919,17 +929,68 @@ USER_HTML = r"""<!DOCTYPE html>
   .result-content table { border-collapse: collapse; width: 100%; margin: 4px 0; }
   .result-content td, .result-content th { border: 1px solid var(--border); padding: 4px 8px; }
 
+  /* ── Drop zone ─────────────────────────────────────────────────────────── */
   .drop-zone {
     border: 2px dashed var(--border); border-radius: 10px; padding: 40px 20px;
     text-align: center; cursor: pointer; transition: all 0.15s; background: var(--card);
   }
   .drop-zone:hover, .drop-zone.drag-over { border-color: var(--primary); background: var(--primary-light); }
+  .drop-zone.has-file { border-color: var(--success); background: #f0fdf4; padding: 18px 20px; }
   .drop-zone-icon { font-size: 2rem; margin-bottom: 8px; }
   .drop-zone-text { color: var(--muted); font-size: 0.95rem; }
   .drop-zone-hint { color: var(--muted); font-size: 0.8rem; margin-top: 4px; }
   .drop-zone input { display: none; }
-  .file-name { margin-top: 12px; padding: 10px 12px; background: var(--primary-light); border-radius: 8px; font-size: 0.9rem; color: var(--primary); }
+  .drop-zone-selected { display: none; align-items: center; gap: 12px; }
+  .drop-zone.has-file .drop-zone-empty { display: none; }
+  .drop-zone.has-file .drop-zone-selected { display: flex; }
+  .dz-check { width: 40px; height: 40px; border-radius: 50%; background: var(--success);
+    display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+  .dz-check svg { width: 20px; height: 20px; stroke: white; fill: none; stroke-width: 2.5; }
+  .dz-file-info { text-align: left; flex: 1; min-width: 0; }
+  .dz-file-name { font-weight: 600; font-size: 0.95rem; color: var(--text);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .dz-file-meta { font-size: 0.8rem; color: var(--muted); margin-top: 2px; }
+  .dz-clear { background: none; border: none; cursor: pointer; color: var(--muted);
+    font-size: 1.2rem; padding: 4px; line-height: 1; flex-shrink: 0; }
+  .dz-clear:hover { color: var(--danger); }
 
+  /* ── File task area ─────────────────────────────────────────────────────── */
+  .file-task-id { font-size: 0.78rem; color: var(--muted); margin-top: 10px;
+    display: none; padding: 4px 8px; background: var(--bg); border-radius: 6px;
+    border: 1px solid var(--border); }
+  .file-task-id.visible { display: block; }
+  .file-task-id span { font-family: monospace; color: var(--primary); }
+
+  .file-log-box {
+    display: none; margin-top: 12px; padding: 12px 14px; background: var(--bg);
+    border: 1px solid var(--border); border-radius: 8px;
+    max-height: 180px; overflow-y: auto; font-size: 0.78rem; line-height: 1.6;
+    color: var(--text); font-family: monospace; white-space: pre-wrap; word-break: break-word;
+  }
+  .file-log-box.visible { display: block; }
+  .file-log-box .log-done { color: #d97706; font-weight: 600; }
+  .file-log-box .log-error { color: var(--danger); }
+
+  .file-progress-wrap { display: none; margin-top: 10px; }
+  .file-progress-wrap.visible { display: block; }
+  .file-progress-bar { height: 4px; background: var(--border); border-radius: 2px; overflow: hidden; }
+  .file-progress-fill { height: 100%; background: var(--primary); border-radius: 2px;
+    transition: width 0.3s; width: 0%; }
+  .file-progress-label { font-size: 0.78rem; color: var(--muted); margin-top: 4px; }
+
+  .file-stats { display: none; margin-top: 12px; }
+  .file-stats.visible { display: flex; gap: 0; }
+  .stat-cell { flex: 1; text-align: center; padding: 8px 4px;
+    border: 1px solid var(--border); border-right: none; background: var(--card); }
+  .stat-cell:first-child { border-radius: 8px 0 0 8px; }
+  .stat-cell:last-child { border-right: 1px solid var(--border); border-radius: 0 8px 8px 0; }
+  .stat-label { font-size: 0.68rem; color: var(--muted); text-transform: uppercase;
+    letter-spacing: 0.05em; font-weight: 600; }
+  .stat-value { font-size: 0.9rem; font-weight: 600; color: var(--text); margin-top: 2px; }
+
+  .file-actions { display: flex; gap: 10px; margin-top: 14px; align-items: center; flex-wrap: wrap; }
+
+  /* ── Generic buttons ────────────────────────────────────────────────────── */
   .actions { display: flex; gap: 10px; margin-top: 14px; align-items: center; flex-wrap: wrap; }
   button.primary, .download-link {
     background: var(--primary); color: white; border: none; border-radius: 8px;
@@ -938,6 +999,13 @@ USER_HTML = r"""<!DOCTYPE html>
   }
   button.primary:hover { background: var(--primary-hover); }
   button.primary:disabled { background: #93c5fd; cursor: not-allowed; }
+  button.secondary {
+    background: var(--card); color: var(--text); border: 1px solid var(--border); border-radius: 8px;
+    padding: 10px 18px; font-size: 0.95rem; font-weight: 500; cursor: pointer;
+    transition: background 0.15s; display: none; align-items: center; gap: 6px;
+  }
+  button.secondary:hover { background: var(--bg); }
+  button.secondary.visible { display: inline-flex; }
   button.stop {
     background: var(--danger); color: white; border: none; border-radius: 8px;
     padding: 11px 22px; font-size: 0.95rem; font-weight: 500; cursor: pointer;
@@ -1054,19 +1122,55 @@ USER_HTML = r"""<!DOCTYPE html>
     </div>
 
     <div id="panel-file" class="panel">
-      <div class="drop-zone" id="drop-zone" onclick="document.getElementById('file-input').click()">
+      <!-- Drop zone -->
+      <div class="drop-zone" id="drop-zone" onclick="dzClick()">
         <input type="file" id="file-input" accept=".pdf,.docx,.txt" onchange="fileSelected(this.files[0])">
-        <div class="drop-zone-icon">📄</div>
-        <div class="drop-zone-text">Натисніть або перетягніть файл</div>
-        <div class="drop-zone-hint">Підтримуються DOCX, PDF, TXT</div>
+        <div class="drop-zone-empty">
+          <div class="drop-zone-icon">📄</div>
+          <div class="drop-zone-text">Натисніть або перетягніть файл</div>
+          <div class="drop-zone-hint">Підтримуються DOCX, PDF, TXT</div>
+        </div>
+        <div class="drop-zone-selected">
+          <div class="dz-check">
+            <svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
+          </div>
+          <div class="dz-file-info">
+            <div class="dz-file-name" id="dz-file-name"></div>
+            <div class="dz-file-meta" id="dz-file-meta">Файл обрано</div>
+          </div>
+          <button class="dz-clear" onclick="clearFile(event)" title="Видалити">&#x2715;</button>
+        </div>
       </div>
-      <div class="file-name" id="file-name" style="display:none"></div>
-      <div class="actions">
+
+      <!-- Task ID -->
+      <div class="file-task-id" id="file-task-id">ID завдання: <span id="file-task-id-val"></span></div>
+
+      <!-- Progress bar -->
+      <div class="file-progress-wrap" id="file-progress-wrap">
+        <div class="file-progress-bar"><div class="file-progress-fill" id="file-progress-fill"></div></div>
+        <div class="file-progress-label" id="file-progress-label"></div>
+      </div>
+
+      <!-- Log box -->
+      <div class="file-log-box" id="file-log-box"></div>
+
+      <!-- Stats -->
+      <div class="file-stats" id="file-stats">
+        <div class="stat-cell"><div class="stat-label">Сегменти</div><div class="stat-value" id="stat-segs">—</div></div>
+        <div class="stat-cell"><div class="stat-label">Символи</div><div class="stat-value" id="stat-chars">—</div></div>
+        <div class="stat-cell"><div class="stat-label">Батчі</div><div class="stat-value" id="stat-batches">—</div></div>
+        <div class="stat-cell"><div class="stat-label">Токени in</div><div class="stat-value" id="stat-tok-in">—</div></div>
+        <div class="stat-cell"><div class="stat-label">Токени out</div><div class="stat-value" id="stat-tok-out">—</div></div>
+        <div class="stat-cell"><div class="stat-label">Час</div><div class="stat-value" id="stat-time">—</div></div>
+      </div>
+
+      <!-- Actions -->
+      <div class="file-actions">
         <button id="btn-file" class="primary" onclick="doTranslateFile()">Перекласти файл</button>
         <button id="btn-file-stop" class="stop" onclick="doFileStop()">Зупинити</button>
-        <a id="download-link" class="download-link">↓ Скачати результат</a>
+        <a id="download-link" class="download-link">↓ Завантажити</a>
+        <button id="btn-file-retry" class="secondary" onclick="doTranslateFile()">↺ Перекласти знову</button>
         <span class="spinner" id="file-spinner"></span>
-        <span class="status" id="file-status"></span>
       </div>
     </div>
   </div>
@@ -1074,7 +1178,7 @@ USER_HTML = r"""<!DOCTYPE html>
   <div class="footer">
     <a href="/admin">Адміністрування</a>
     <span style="margin: 0 12px; color: var(--border);">|</span>
-    <span>v1.3</span>
+    <span>v1.6</span>
   </div>
 </div>
 
@@ -1217,21 +1321,76 @@ async function doStop() {
 }
 
 // ── File translation ──────────────────────────────────────────────────
+// ── File translation ──────────────────────────────────────────────────────
 let _fileController = null;
 let _fileRequestId = null;
 let _selectedFile = null;
+let _fileStartTime = null;
+
+function dzClick() {
+  if (!_selectedFile) document.getElementById('file-input').click();
+}
 
 function fileSelected(f) {
   _selectedFile = f;
-  const nameEl = document.getElementById('file-name');
+  const dz = document.getElementById('drop-zone');
   if (f) {
-    nameEl.textContent = f.name + ' (' + (f.size / 1024).toFixed(1) + ' KB)';
-    nameEl.style.display = 'block';
+    dz.classList.add('has-file');
+    document.getElementById('dz-file-name').textContent = f.name;
+    document.getElementById('dz-file-meta').textContent =
+      (f.size / 1024).toFixed(1) + ' KB · ' + (f.name.split('.').pop().toUpperCase());
   } else {
-    nameEl.style.display = 'none';
+    dz.classList.remove('has-file');
   }
+  fileResetResult();
+}
+
+function clearFile(e) {
+  e.stopPropagation();
+  _selectedFile = null;
+  document.getElementById('file-input').value = '';
+  fileSelected(null);
+}
+
+function fileResetResult() {
   document.getElementById('download-link').classList.remove('visible');
-  setStatus('file-status', '');
+  document.getElementById('btn-file-retry').classList.remove('visible');
+  document.getElementById('file-task-id').classList.remove('visible');
+  document.getElementById('file-log-box').classList.remove('visible');
+  document.getElementById('file-log-box').innerHTML = '';
+  document.getElementById('file-progress-wrap').classList.remove('visible');
+  document.getElementById('file-stats').classList.remove('visible');
+  setProgress(0, '');
+}
+
+function fileLog(msg, cls) {
+  const box = document.getElementById('file-log-box');
+  box.classList.add('visible');
+  const line = document.createElement('div');
+  if (cls) line.className = cls;
+  line.textContent = msg;
+  box.appendChild(line);
+  box.scrollTop = box.scrollHeight;
+}
+
+function setProgress(pct, label) {
+  document.getElementById('file-progress-fill').style.width = pct + '%';
+  document.getElementById('file-progress-label').textContent = label;
+}
+
+function showStats(data) {
+  const el = document.getElementById('file-stats');
+  el.classList.add('visible');
+  if (data.segs !== undefined) document.getElementById('stat-segs').textContent = data.segs;
+  if (data.chars !== undefined) document.getElementById('stat-chars').textContent =
+    data.chars >= 1000 ? (data.chars/1000).toFixed(1)+'K' : data.chars;
+  if (data.batches !== undefined) document.getElementById('stat-batches').textContent = data.batches;
+  if (data.tok_in !== undefined) document.getElementById('stat-tok-in').textContent =
+    data.tok_in >= 1000 ? (data.tok_in/1000).toFixed(1)+'K' : data.tok_in;
+  if (data.tok_out !== undefined) document.getElementById('stat-tok-out').textContent =
+    data.tok_out >= 1000 ? (data.tok_out/1000).toFixed(1)+'K' : data.tok_out;
+  if (data.elapsed !== undefined) document.getElementById('stat-time').textContent =
+    data.elapsed.toFixed(1)+'с';
 }
 
 const dropZone = document.getElementById('drop-zone');
@@ -1244,23 +1403,24 @@ dropZone.addEventListener('drop', e => {
 });
 
 async function doTranslateFile() {
-  if (!_selectedFile) { setStatus('file-status', 'Оберіть файл', 'error'); return; }
+  if (!_selectedFile) { fileLog('Оберіть файл', 'log-error'); return; }
 
   setWorking('file', true);
-  setStatus('file-status', 'Завантаження...');
-  document.getElementById('download-link').classList.remove('visible');
+  fileResetResult();
+  document.getElementById('file-progress-wrap').classList.add('visible');
   _fileController = new AbortController();
+  _fileStartTime = Date.now();
 
   const fd = new FormData();
   fd.append('file', _selectedFile, _selectedFile.name);
   fd.append('lang_from', document.getElementById('lang_from').value);
   fd.append('lang_to', document.getElementById('lang_to').value);
 
+  const statsAccum = { segs: 0, chars: 0, batches: 0, tok_in: 0, tok_out: 0 };
+
   try {
     const resp = await fetch('/translate-file', {
-      method: 'POST',
-      signal: _fileController.signal,
-      body: fd,
+      method: 'POST', signal: _fileController.signal, body: fd,
     });
     const reader = resp.body.getReader();
     const decoder = new TextDecoder();
@@ -1274,22 +1434,49 @@ async function doTranslateFile() {
       for (const line of lines) {
         if (!line.startsWith('data: ')) continue;
         let evt; try { evt = JSON.parse(line.slice(6)); } catch { continue; }
-        if (evt.type === 'id') _fileRequestId = evt.text;
-        else if (evt.type === 'progress') setStatus('file-status', evt.text);
+
+        if (evt.type === 'id') {
+          _fileRequestId = evt.text;
+          const tid = document.getElementById('file-task-id');
+          document.getElementById('file-task-id-val').textContent = evt.text.slice(0, 8);
+          tid.classList.add('visible');
+        }
+        else if (evt.type === 'log') {
+          fileLog(evt.text);
+          // Parse meta from log text
+          const segsM = evt.text.match(/(\d+)\s+сегмент/);
+          const charsM = evt.text.match(/(\d+)\s+симв/);
+          const batchM = evt.text.match(/~?(\d+)\s+батч/);
+          if (segsM) statsAccum.segs = parseInt(segsM[1]);
+          if (charsM) statsAccum.chars = parseInt(charsM[1]);
+          if (batchM) statsAccum.batches = parseInt(batchM[1]);
+        }
+        else if (evt.type === 'progress') {
+          setProgress(evt.pct || 0, evt.text);
+        }
+        else if (evt.type === 'stats') {
+          statsAccum.tok_in = (evt.tok_in || 0);
+          statsAccum.tok_out = (evt.tok_out || 0);
+        }
         else if (evt.type === 'download') {
+          const elapsed = (Date.now() - _fileStartTime) / 1000;
+          fileLog('Переклад завершено! Тривалість ' + elapsed.toFixed(2) + ' сек.', 'log-done');
+          setProgress(100, '');
+          showStats({ ...statsAccum, elapsed });
           const link = document.getElementById('download-link');
           link.href = evt.url;
           link.download = evt.filename;
           link.classList.add('visible');
-          setStatus('file-status', 'Готово', 'success');
+          document.getElementById('btn-file-retry').classList.add('visible');
         }
         else if (evt.type === 'error') {
-          setStatus('file-status', 'Помилка: ' + (evt.text || 'невідома'), 'error');
+          fileLog('Помилка: ' + (evt.text || 'невідома'), 'log-error');
+          setProgress(0, '');
         }
       }
     }
   } catch (e) {
-    if (e.name !== 'AbortError') setStatus('file-status', 'Помилка з\'єднання', 'error');
+    if (e.name !== 'AbortError') fileLog('Помилка з\'єднання: ' + e.message, 'log-error');
   }
   setWorking('file', false);
   _fileController = null;
@@ -1302,7 +1489,7 @@ async function doFileStop() {
     await fetch('/stop/' + _fileRequestId, {method: 'POST'}).catch(() => {});
     _fileRequestId = null;
   }
-  setStatus('file-status', 'Зупинено');
+  fileLog('Зупинено користувачем');
   setWorking('file', false);
 }
 
@@ -1923,20 +2110,21 @@ async def translate_file_endpoint(
                 for event in it:
                     kind = event[0]
                     if kind == "log":
-                        yield log_event(event[1])
+                        yield f"data: {json.dumps({'type': 'log', 'text': event[1]})}\n\n"
                     elif kind == "meta":
                         meta.update(event[1])
                     elif kind == "progress":
                         yield f"data: {json.dumps({'type': 'progress', 'text': event[1], 'pct': event[2]})}\n\n"
+                    elif kind == "stats":
+                        yield f"data: {json.dumps({'type': 'stats', 'tok_in': event[1], 'tok_out': event[2]})}\n\n"
                     elif kind == "error":
                         final_error = event[1]
                         log.warning(f"[{filename}] {event[1]}")
-                        yield log_event(f"ERROR: {event[1]}")
                         yield f"data: {json.dumps({'type': 'error', 'text': event[1]})}\n\n"
                         return
                     elif kind == "stopped":
                         final_status = "stopped"
-                        yield log_event("Зупинено користувачем")
+                        yield f"data: {json.dumps({'type': 'log', 'text': 'Зупинено користувачем'})}\n\n"
                         yield f"data: {json.dumps({'type': 'done'})}\n\n"
                         return
                     elif kind == "done":
@@ -1944,7 +2132,6 @@ async def translate_file_endpoint(
                         file_id = str(uuid.uuid4())
                         _results[file_id] = (out_filename, data, mime)
                         final_status = "success"
-                        yield log_event(f"Готово — {len(data)} bytes")
                         yield f"data: {json.dumps({'type': 'download', 'url': f'/download/{file_id}', 'filename': out_filename})}\n\n"
                         yield f"data: {json.dumps({'type': 'done'})}\n\n"
                         return
