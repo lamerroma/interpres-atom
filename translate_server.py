@@ -783,13 +783,24 @@ def translate_pdf_bytes(content, base_name, lang_from, lang_to, stop_event):
             g = ((color_int >> 8) & 0xFF) / 255
             b = (color_int & 0xFF) / 255
 
-            page.insert_textbox(
-                rect, translated,
-                fontsize=max(fontsize - 0.5, 6),
-                color=(r, g, b),
-                align=0,
-                overflow="ignore",
-            )
+            fs = max(fontsize - 0.5, 6)
+            while fs >= 4:
+                rc = page.insert_textbox(
+                    rect, translated,
+                    fontsize=fs,
+                    color=(r, g, b),
+                    align=0,
+                )
+                if rc >= 0:
+                    break
+                fs = round(fs - 0.5, 1)
+            else:
+                page.insert_textbox(
+                    rect, translated,
+                    fontsize=4,
+                    color=(r, g, b),
+                    align=0,
+                )
 
         yield ("progress", f"Сторінка {page_num + 1}/{total_pages}", pct)
 
