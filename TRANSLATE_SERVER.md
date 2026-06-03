@@ -198,5 +198,5 @@ pydantic
 Встановити:
 
 ```bash
-pip install fastapi uvicorn requests pypdf python-docx python-multipart
+pip install fastapi uvicorn requests pypdf python-docx python-multipart html2text markdown
 ```

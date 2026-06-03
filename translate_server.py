@@ -2193,42 +2193,46 @@ def translate_html(req: TranslateHtmlRequest, request: Request):
             yield log_event(f"[{ts()}] HTML translation: {len(req.html)} bytes")
 
             try:
-                parts, text_indices, _ = _parse_html_to_parts(req.html)
+                import html2text as h2t
+                import markdown as md_lib
 
-                if not text_indices:
-                    final_status = "success"
-                    yield f"data: {json.dumps({'type': 'result', 'text': req.html})}\n\n"
+                # Convert HTML → Markdown (like TipTap does in OpenWebUI)
+                converter = h2t.HTML2Text()
+                converter.ignore_links = False
+                converter.body_width = 0  # no line wrapping
+                markdown_text = converter.handle(req.html).strip()
+
+                if not markdown_text:
+                    final_status = "error"
+                    yield f"data: {json.dumps({'type': 'error', 'text': 'Порожній текст'})}\n\n"
                     yield f"data: {json.dumps({'type': 'done'})}\n\n"
                     return
 
-                # Translate each text node individually — no markers needed,
-                # works reliably with any model including reasoning models
-                any_translated = False
-                for idx in text_indices:
+                yield log_event(f"[{ts()}] Markdown: {len(markdown_text)} chars")
+
+                # Stream translation of Markdown — model preserves ** ## - naturally
+                translated_md = ""
+                for token in _translate_unit_streaming(
+                    markdown_text, req.lang_from, req.lang_to, stop_event
+                ):
                     if stop_event.is_set():
                         final_status = "stopped"
                         yield f"data: {json.dumps({'type': 'done'})}\n\n"
                         return
+                    translated_md += token
+                    yield f"data: {json.dumps({'type': 'token', 'text': token})}\n\n"
 
-                    node_text = parts[idx][1]
-                    translated_node = ""
-                    for token in _translate_unit_streaming(
-                        node_text, req.lang_from, req.lang_to, stop_event
-                    ):
-                        translated_node += token
-                        yield f"data: {json.dumps({'type': 'token', 'text': token})}\n\n"
-
-                    if translated_node:
-                        parts[idx] = ('text', translated_node)
-                        any_translated = True
-
-                if not any_translated:
+                if not translated_md:
                     final_status = "error"
                     yield f"data: {json.dumps({'type': 'error', 'text': 'Ollama не повернув результат'})}\n\n"
                     yield f"data: {json.dumps({'type': 'done'})}\n\n"
                     return
 
-                translated_html = ''.join(content for _, content in parts)
+                # Convert translated Markdown → HTML for display
+                translated_html = md_lib.markdown(
+                    translated_md,
+                    extensions=['tables', 'fenced_code']
+                )
                 final_status = "success"
                 yield log_event(f"[{ts()}] Done — {len(translated_html)} bytes")
                 yield f"data: {json.dumps({'type': 'result', 'text': translated_html})}\n\n"
