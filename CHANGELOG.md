@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.10 (2026-06-03)
+- Перейменування застосунку: **Interpres-API**
+- Виправлено: лічильник онлайн ламав Ollama-підключення та вибір моделі
+  - `crypto.randomUUID()` замінено на fallback для LAN (non-HTTPS)
+  - `#preview-modal` перенесено перед `<script>` (null.addEventListener крашив JS)
+- `mammoth` додано до `requirements.txt`; помилка імпорту тепер видима в лозі
+- "батчів" → "запитів до моделі" у логах і статистиці
+
 ## v1.9 (2026-06-03)
 - Лічильник онлайн-користувачів у шапці сторінки
   - Heartbeat кожні 15 секунд (POST /heartbeat з унікальним session_id)
