@@ -975,7 +975,8 @@ USER_HTML = r"""<!DOCTYPE html>
     width: 100%; padding: 14px; border: 1px solid var(--border); border-radius: 8px;
     font-size: 0.95rem; font-family: inherit; min-height: 140px; max-height: 400px;
     line-height: 1.6; background: var(--card); color: var(--text);
-    overflow-y: auto; box-sizing: border-box; outline: none;
+    overflow-y: auto; overflow-x: hidden; box-sizing: border-box; outline: none;
+    word-break: break-word; overflow-wrap: break-word;
   }
   .rich-editor:focus { border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-light); }
   .rich-editor[contenteditable=true]:empty:before {
@@ -996,7 +997,8 @@ USER_HTML = r"""<!DOCTYPE html>
     width: 100%; padding: 14px; border: 1px solid var(--border); border-radius: 8px;
     font-size: 0.95rem; font-family: inherit; min-height: 80px;
     line-height: 1.6; background: #f1f5f9; color: var(--text);
-    box-sizing: border-box; overflow-y: auto;
+    box-sizing: border-box; overflow-y: auto; overflow-x: hidden;
+    word-break: break-word; overflow-wrap: break-word;
   }
   .result-content b, .result-content strong { font-weight: bold; }
   .result-content i, .result-content em { font-style: italic; }
