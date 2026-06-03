@@ -236,10 +236,17 @@ def _collect_all_segments(doc: DocxDocument) -> Tuple[List[Dict], List[str]]:
 # Apply translations
 # ---------------------------------------------------------------------------
 
-def _apply_translation(element_info: Dict, final_text: str):
+def _apply_translation(element_info: Dict, original_text: str, translated_text: str,
+                       insert_mode: str = "replace", separator: str = "\n"):
     runs = element_info["runs"]
     if not runs:
         return
+    if insert_mode == "append":
+        final_text = original_text + separator + translated_text
+    elif insert_mode == "prepend":
+        final_text = translated_text + separator + original_text
+    else:
+        final_text = translated_text
     first_idx = -1
     for i, run in enumerate(runs):
         if run.element.getparent() is not None:
@@ -332,14 +339,15 @@ def _prune_unwanted_from_copy(p_element):
 
 
 def _apply_all_translations(doc: DocxDocument, elements: List[Dict],
-                             translated: List[str], originals: List[str]) -> bytes:
+                             translated: List[str], originals: List[str],
+                             insert_mode: str = "replace", separator: str = "\n") -> bytes:
     if len(elements) != len(translated):
         log.error(f"Segment count mismatch: orig={len(originals)}, trans={len(translated)}")
         n = min(len(elements), len(translated))
-        elements, translated = elements[:n], translated[:n]
+        elements, translated, originals = elements[:n], translated[:n], originals[:n]
 
-    for info, trans in zip(elements, translated):
-        _apply_translation(info, trans)
+    for info, orig, trans in zip(elements, originals, translated):
+        _apply_translation(info, orig, trans, insert_mode=insert_mode, separator=separator)
 
     buf = io.BytesIO()
     doc.save(buf)
@@ -354,7 +362,9 @@ def translate_docx(content: bytes,
                    lang_to: str,
                    translate_batch_fn: Callable,
                    stop_event: threading.Event,
-                   chunk_size: int = 3000) -> bytes:
+                   chunk_size: int = 3000,
+                   insert_mode: str = "replace",
+                   separator: str = "\n") -> bytes:
     """Translate a DOCX file, preserving all formatting.
 
     Args:
@@ -363,6 +373,8 @@ def translate_docx(content: bytes,
         translate_batch_fn: fn(batch: dict[str,str], lang_to: str, stop_event) -> dict[str,str]
         stop_event: set this to abort mid-translation
         chunk_size: max characters per LLM request
+        insert_mode: "replace" | "append" | "prepend"
+        separator: string inserted between original and translation in append/prepend mode
 
     Returns:
         Translated .docx bytes. Raises on unrecoverable errors.
@@ -411,4 +423,5 @@ def translate_docx(content: bytes,
         if not t:
             translated[i] = originals[i]
 
-    return _apply_all_translations(doc, elements, translated, originals)
+    return _apply_all_translations(doc, elements, translated, originals,
+                                   insert_mode=insert_mode, separator=separator)

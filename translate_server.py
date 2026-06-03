@@ -31,6 +31,11 @@ DEFAULTS = {
     "max_tokens":      2048,
     "llm_timeout":     180,
     "chunk_size":      3000,
+    "temperature":     0.7,
+    "retry":           2,
+    "insert_mode":     "replace",
+    "separator":       "\n",
+    "custom_prompt":   "",
     "auth_user":       "admin",
     "auth_pass":       "translate",
     "max_pdf_pages":   10,
@@ -505,71 +510,87 @@ def _translate_json_segments(batch: dict, lang_to: str,
     object with the same keys and translated values.  On any failure, returns
     the original texts so the document still saves cleanly.
     If token_stats dict is provided, accumulates prompt_eval_count / eval_count.
+    Retries up to CFG["retry"] times on failure.
     """
     if stop_event.is_set():
         return batch
 
     json_input = json.dumps(batch, ensure_ascii=False)
-    prompt = (
+    custom_prompt = CFG.get("custom_prompt", "").strip()
+    base_instruction = (
         f"Translate each JSON value into {lang_to}. "
         "Return ONLY a valid JSON object with exactly the same keys and translated values. "
-        "Do not add commentary.\n\n"
-        f"{json_input}"
+        "Do not add commentary."
     )
+    if custom_prompt:
+        instruction = f"{custom_prompt}\n{base_instruction}"
+    else:
+        instruction = base_instruction
+    prompt = f"{instruction}\n\n{json_input}"
 
-    try:
-        resp = req_lib.post(
-            f"{_ollama_native_host()}/api/chat",
-            json={
-                "model": CFG["model"],
-                "messages": [{"role": "user", "content": prompt}],
-                "stream": False,
-            },
-            timeout=CFG["llm_timeout"],
-        )
+    max_retries = max(1, int(CFG.get("retry", 2)))
+    temperature = float(CFG.get("temperature", 0.7))
+
+    for attempt in range(max_retries):
         if stop_event.is_set():
             return batch
-        if resp.status_code != 200:
-            log.warning(f"_translate_json_segments HTTP {resp.status_code}")
-            return batch
+        try:
+            resp = req_lib.post(
+                f"{_ollama_native_host()}/api/chat",
+                json={
+                    "model": CFG["model"],
+                    "messages": [{"role": "user", "content": prompt}],
+                    "stream": False,
+                    "options": {"temperature": temperature},
+                },
+                timeout=CFG["llm_timeout"],
+            )
+            if stop_event.is_set():
+                return batch
+            if resp.status_code != 200:
+                log.warning(f"_translate_json_segments HTTP {resp.status_code} (attempt {attempt+1})")
+                continue
 
-        data = resp.json()
+            data = resp.json()
 
-        if token_stats is not None:
-            token_stats["tok_in"] = token_stats.get("tok_in", 0) + data.get("prompt_eval_count", 0)
-            token_stats["tok_out"] = token_stats.get("tok_out", 0) + data.get("eval_count", 0)
+            if token_stats is not None:
+                token_stats["tok_in"]  = token_stats.get("tok_in",  0) + data.get("prompt_eval_count", 0)
+                token_stats["tok_out"] = token_stats.get("tok_out", 0) + data.get("eval_count", 0)
 
-        content = (data.get("message", {}).get("content") or "").strip()
+            content = (data.get("message", {}).get("content") or "").strip()
 
-        # Strip markdown code fences if present
-        for fence in ("```json", "```"):
-            if content.startswith(fence):
-                content = content[len(fence):]
-                break
-        if content.endswith("```"):
-            content = content[:-3]
-        content = content.strip()
+            # Strip markdown code fences if present
+            for fence in ("```json", "```"):
+                if content.startswith(fence):
+                    content = content[len(fence):]
+                    break
+            if content.endswith("```"):
+                content = content[:-3]
+            content = content.strip()
 
-        parsed = json.loads(content)
+            parsed = json.loads(content)
 
-        # Accept either {"1": "text"} or [{"id": "1", "t": "text"}]
-        if isinstance(parsed, list):
-            result = {str(item["id"]): item.get("t", "") for item in parsed
-                      if isinstance(item, dict) and "id" in item}
-        elif isinstance(parsed, dict):
-            result = {str(k): str(v) for k, v in parsed.items()}
-        else:
-            return batch
+            # Accept either {"1": "text"} or [{"id": "1", "t": "text"}]
+            if isinstance(parsed, list):
+                result = {str(item["id"]): item.get("t", "") for item in parsed
+                          if isinstance(item, dict) and "id" in item}
+            elif isinstance(parsed, dict):
+                result = {str(k): str(v) for k, v in parsed.items()}
+            else:
+                log.warning(f"_translate_json_segments unexpected type {type(parsed)} (attempt {attempt+1})")
+                continue
 
-        # Fill in any missing keys with original text
-        for k in batch:
-            if k not in result or not result[k].strip():
-                result[k] = batch[k]
-        return result
+            # Fill in any missing keys with original text
+            for k in batch:
+                if k not in result or not result[k].strip():
+                    result[k] = batch[k]
+            return result
 
-    except Exception as e:
-        log.warning(f"_translate_json_segments failed: {e}")
-        return batch
+        except Exception as e:
+            log.warning(f"_translate_json_segments attempt {attempt+1} failed: {e}")
+
+    log.warning("_translate_json_segments all retries exhausted, returning originals")
+    return batch
 
 
 def translate_docx_bytes(content, base_name, lang_from, lang_to, stop_event):
@@ -608,11 +629,13 @@ def translate_docx_bytes(content, base_name, lang_from, lang_to, stop_event):
     yield ("meta", {"chars": total_chars, "pages": None})
 
     target_lang = lang_to if lang_to else "Ukrainian"
-    chunk_size = CFG.get("chunk_size", 3000)
+    chunk_size  = CFG.get("chunk_size",  3000)
+    insert_mode = CFG.get("insert_mode", "replace")
+    separator   = CFG.get("separator",   "\n")
 
     # Count batches for progress reporting
     n_batches = max(1, -(-total_chars // chunk_size))  # ceil division
-    yield ("log", f"DOCX: ~{n_batches} батчів для перекладу")
+    yield ("log", f"DOCX: ~{n_batches} батчів для перекладу (режим: {insert_mode})")
 
     token_stats = {"tok_in": 0, "tok_out": 0}
     batch_counter = [0]
@@ -629,6 +652,8 @@ def translate_docx_bytes(content, base_name, lang_from, lang_to, stop_event):
             translate_batch_with_progress,
             stop_event,
             chunk_size=chunk_size,
+            insert_mode=insert_mode,
+            separator=separator,
         )
     except Exception as e:
         if stop_event.is_set():
@@ -1559,7 +1584,9 @@ ADMIN_HTML = r"""<!DOCTYPE html>
   h1 { margin-bottom: 20px; font-size: 1.4rem; color: #333; }
   .card { background: white; border-radius: 8px; padding: 20px; box-shadow: 0 1px 4px rgba(0,0,0,.1); margin-bottom: 16px; }
   label { display: block; font-size: .85rem; color: #555; margin-bottom: 4px; }
-  input[type=text], input[type=number] { width: 100%; border: 1px solid #ddd; border-radius: 6px; padding: 8px 10px; font-size: .95rem; font-family: inherit; }
+  input[type=text], input[type=number], select, textarea { width: 100%; border: 1px solid #ddd; border-radius: 6px; padding: 8px 10px; font-size: .95rem; font-family: inherit; }
+  textarea { resize: vertical; min-height: 60px; }
+  select { background: white; cursor: pointer; }
   .btn-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   button { background: #2563eb; color: white; border: none; border-radius: 6px; padding: 10px 24px; font-size: 1rem; cursor: pointer; transition: background .2s; }
   button:hover { background: #1d4ed8; }
@@ -1647,6 +1674,30 @@ ADMIN_HTML = r"""<!DOCTYPE html>
         <label>Макс. символів (текст/DOCX/TXT)</label>
         <input type="number" id="cfg_max_chars" min="1000" max="1000000" step="1000">
       </div>
+      <div>
+        <label>Temperature (0 — точно, 2 — творчо)</label>
+        <input type="number" id="cfg_temperature" min="0" max="2" step="0.05">
+      </div>
+      <div>
+        <label>Повторів при помилці (retry)</label>
+        <input type="number" id="cfg_retry" min="1" max="6" step="1">
+      </div>
+      <div>
+        <label>Режим вставки перекладу</label>
+        <select id="cfg_insert_mode" onchange="toggleSeparator()">
+          <option value="replace">replace — замінити оригінал</option>
+          <option value="append">append — після оригіналу</option>
+          <option value="prepend">prepend — перед оригіналом</option>
+        </select>
+      </div>
+      <div id="cfg_separator_row">
+        <label>Роздільник (append/prepend)</label>
+        <input type="text" id="cfg_separator" placeholder="&#10;(новий рядок)">
+      </div>
+      <div class="full">
+        <label>Кастомна інструкція перекладу (custom_prompt, необов'язково)</label>
+        <textarea id="cfg_custom_prompt" placeholder="Наприклад: Зберігай технічні терміни без перекладу."></textarea>
+      </div>
     </div>
     <div class="btn-row" style="margin-top:16px;">
       <button class="btn-save" onclick="saveSettings()">Зберегти</button>
@@ -1657,9 +1708,12 @@ ADMIN_HTML = r"""<!DOCTYPE html>
 </div>
 
 <script>
-async function loadSettings() {
-  const r = await fetch('/config');
-  const cfg = await r.json();
+function toggleSeparator() {
+  const mode = document.getElementById('cfg_insert_mode').value;
+  document.getElementById('cfg_separator_row').style.display = (mode === 'replace') ? 'none' : '';
+}
+
+function applyCfg(cfg) {
   document.getElementById('cfg_base_url').value      = cfg.base_url      ?? '';
   document.getElementById('cfg_model').value         = cfg.model         ?? '';
   document.getElementById('cfg_max_tokens').value    = cfg.max_tokens    ?? 2048;
@@ -1667,6 +1721,17 @@ async function loadSettings() {
   document.getElementById('cfg_chunk_size').value    = cfg.chunk_size    ?? 3000;
   document.getElementById('cfg_max_pdf_pages').value = cfg.max_pdf_pages ?? 10;
   document.getElementById('cfg_max_chars').value     = cfg.max_chars     ?? 30000;
+  document.getElementById('cfg_temperature').value   = cfg.temperature   ?? 0.7;
+  document.getElementById('cfg_retry').value         = cfg.retry         ?? 2;
+  document.getElementById('cfg_insert_mode').value   = cfg.insert_mode   ?? 'replace';
+  document.getElementById('cfg_separator').value     = cfg.separator     ?? '\n';
+  document.getElementById('cfg_custom_prompt').value = cfg.custom_prompt ?? '';
+  toggleSeparator();
+}
+
+async function loadSettings() {
+  const r = await fetch('/config');
+  applyCfg(await r.json());
 }
 
 async function saveSettings() {
@@ -1678,6 +1743,11 @@ async function saveSettings() {
     chunk_size:    parseInt(document.getElementById('cfg_chunk_size').value),
     max_pdf_pages: parseInt(document.getElementById('cfg_max_pdf_pages').value),
     max_chars:     parseInt(document.getElementById('cfg_max_chars').value),
+    temperature:   parseFloat(document.getElementById('cfg_temperature').value),
+    retry:         parseInt(document.getElementById('cfg_retry').value),
+    insert_mode:   document.getElementById('cfg_insert_mode').value,
+    separator:     document.getElementById('cfg_separator').value,
+    custom_prompt: document.getElementById('cfg_custom_prompt').value,
   };
   const st = document.getElementById('cfg-status');
   try {
@@ -1691,14 +1761,7 @@ async function saveSettings() {
 
 async function resetSettings() {
   const r = await fetch('/config/defaults');
-  const cfg = await r.json();
-  document.getElementById('cfg_base_url').value      = cfg.base_url;
-  document.getElementById('cfg_model').value         = cfg.model;
-  document.getElementById('cfg_max_tokens').value    = cfg.max_tokens;
-  document.getElementById('cfg_llm_timeout').value   = cfg.llm_timeout;
-  document.getElementById('cfg_chunk_size').value    = cfg.chunk_size;
-  document.getElementById('cfg_max_pdf_pages').value = cfg.max_pdf_pages;
-  document.getElementById('cfg_max_chars').value     = cfg.max_chars;
+  applyCfg(await r.json());
 }
 
 async function loadStats() {
