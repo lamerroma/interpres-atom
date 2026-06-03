@@ -1266,7 +1266,7 @@ USER_HTML = r"""<!DOCTYPE html>
     <button id="btn-preview-pdf" onclick="savePdf()">&#128438; Зберегти PDF</button>
     <button id="btn-preview-close" onclick="closePreview()">&#10005; Закрити</button>
   </div>
-  <iframe id="preview-iframe" sandbox="allow-same-origin allow-scripts"></iframe>
+  <iframe id="preview-iframe" sandbox="allow-same-origin allow-scripts allow-modals"></iframe>
 </div>
 
 <script>
