@@ -837,7 +837,7 @@ USER_HTML = r"""<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Перекладач</title>
+<title>Interpres-API</title>
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -1137,7 +1137,7 @@ USER_HTML = r"""<!DOCTYPE html>
 <div class="container">
   <header>
     <div>
-      <h1>Перекладач</h1>
+      <h1>Interpres-API</h1>
       <p>Локальний переклад документів і тексту</p>
     </div>
     <span class="online-badge" id="online-badge" title="Користувачів онлайн">
@@ -1699,7 +1699,7 @@ ADMIN_HTML = r"""<!DOCTYPE html>
 <html lang="uk">
 <head>
 <meta charset="UTF-8">
-<title>Перекладач — Адмін</title>
+<title>Interpres-API — Адмін</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: sans-serif; background: #f5f5f5; padding: 24px; max-width: 900px; margin: 0 auto; }
@@ -1728,7 +1728,7 @@ ADMIN_HTML = r"""<!DOCTYPE html>
 </head>
 <body>
 <a class="back-link" href="/">&#8592; На головну</a>
-<h1>Адміністрування</h1>
+<h1>Interpres-API — Адміністрування</h1>
 
 <!-- Stats -->
 <div class="card">
