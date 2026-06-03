@@ -918,7 +918,7 @@ USER_HTML = r"""<!DOCTYPE html>
     min-height: 100vh;
     line-height: 1.5;
   }
-  .container { max-width: 920px; margin: 0 auto; }
+  .container { width: 80%; max-width: 100%; margin: 0 auto; }
   header { text-align: center; margin-bottom: 32px; }
   header h1 { font-size: 1.75rem; font-weight: 600; color: var(--text); }
   header p { color: var(--muted); font-size: 0.95rem; margin-top: 4px; }
@@ -1069,8 +1069,8 @@ USER_HTML = r"""<!DOCTYPE html>
     font-size: 0.8rem; color: var(--muted); font-weight: 500;
     margin-bottom: 8px; display: flex; align-items: center; gap: 8px; min-height: 22px;
   }
-  .rich-editor { min-height: 320px; max-height: 520px; }
-  .result-content { min-height: 320px; max-height: 520px; }
+  .rich-editor { min-height: 320px; max-height: 70vh; }
+  .result-content { min-height: 320px; max-height: 70vh; }
   .result-content.streaming { color: var(--muted); font-style: italic; white-space: pre-wrap; }
   .result-placeholder { color: #aaa; font-size: 0.9rem; padding: 14px; }
 </style>
