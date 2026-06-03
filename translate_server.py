@@ -2193,33 +2193,42 @@ def translate_html(req: TranslateHtmlRequest, request: Request):
             yield log_event(f"[{ts()}] HTML translation: {len(req.html)} bytes")
 
             try:
-                parts, text_indices, batch = _parse_html_to_parts(req.html)
+                parts, text_indices, _ = _parse_html_to_parts(req.html)
 
                 if not text_indices:
-                    # No text nodes — return HTML as-is
                     final_status = "success"
                     yield f"data: {json.dumps({'type': 'result', 'text': req.html})}\n\n"
                     yield f"data: {json.dumps({'type': 'done'})}\n\n"
                     return
 
-                # Stream tokens from Ollama — show progress in real time
-                translated_batch = ""
-                for token in _translate_unit_streaming(batch, req.lang_from, req.lang_to, stop_event):
+                # Translate each text node individually — no markers needed,
+                # works reliably with any model including reasoning models
+                any_translated = False
+                for idx in text_indices:
                     if stop_event.is_set():
                         final_status = "stopped"
                         yield f"data: {json.dumps({'type': 'done'})}\n\n"
                         return
-                    translated_batch += token
-                    yield f"data: {json.dumps({'type': 'token', 'text': token})}\n\n"
 
-                if not translated_batch:
+                    node_text = parts[idx][1]
+                    translated_node = ""
+                    for token in _translate_unit_streaming(
+                        node_text, req.lang_from, req.lang_to, stop_event
+                    ):
+                        translated_node += token
+                        yield f"data: {json.dumps({'type': 'token', 'text': token})}\n\n"
+
+                    if translated_node:
+                        parts[idx] = ('text', translated_node)
+                        any_translated = True
+
+                if not any_translated:
                     final_status = "error"
                     yield f"data: {json.dumps({'type': 'error', 'text': 'Ollama не повернув результат'})}\n\n"
                     yield f"data: {json.dumps({'type': 'done'})}\n\n"
                     return
 
-                # Reconstruct HTML with translated text nodes
-                translated_html = _reconstruct_html(parts, text_indices, translated_batch)
+                translated_html = ''.join(content for _, content in parts)
                 final_status = "success"
                 yield log_event(f"[{ts()}] Done — {len(translated_html)} bytes")
                 yield f"data: {json.dumps({'type': 'result', 'text': translated_html})}\n\n"
