@@ -256,6 +256,8 @@ async def basic_auth(request: Request, call_next):
 _active: dict[str, threading.Event] = {}
 _results: dict[str, tuple[str, bytes]] = {}
 _preview_cache: dict[str, bytes] = {}   # file_id -> HTML bytes from mammoth
+_sessions: dict[str, float] = {}        # session_id -> last_seen timestamp
+_SESSION_TTL = 45                       # seconds before a session is considered gone
 
 _job_queue: _queue_mod.Queue = _queue_mod.Queue()
 _ticket_lock = threading.Lock()
@@ -863,7 +865,8 @@ USER_HTML = r"""<!DOCTYPE html>
     line-height: 1.5;
   }
   .container { width: 80%; max-width: 100%; margin: 0 auto; }
-  header { text-align: center; margin-bottom: 32px; }
+  header { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 32px; }
+  header > div { text-align: left; }
   header h1 { font-size: 1.75rem; font-weight: 600; color: var(--text); }
   header p { color: var(--muted); font-size: 0.95rem; margin-top: 4px; }
 
@@ -1113,13 +1116,34 @@ USER_HTML = r"""<!DOCTYPE html>
   .model-select-wrap { flex: 1; min-width: 200px; }
   .model-select-wrap label { display: block; font-size: 0.78rem; color: var(--muted); margin-bottom: 4px; }
   .model-select-wrap select { width: 100%; }
+
+  .online-badge {
+    display: inline-flex; align-items: center; gap: 5px;
+    font-size: 0.78rem; color: var(--muted);
+    background: var(--bg); border: 1px solid var(--border);
+    border-radius: 999px; padding: 2px 10px 2px 6px;
+  }
+  .online-dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--success); flex-shrink: 0;
+    animation: pulse 2s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; } 50% { opacity: .4; }
+  }
 </style>
 </head>
 <body>
 <div class="container">
   <header>
-    <h1>Перекладач</h1>
-    <p>Локальний переклад документів і тексту</p>
+    <div>
+      <h1>Перекладач</h1>
+      <p>Локальний переклад документів і тексту</p>
+    </div>
+    <span class="online-badge" id="online-badge" title="Користувачів онлайн">
+      <span class="online-dot"></span>
+      <span id="online-count">—</span>
+    </span>
   </header>
 
   <div class="card">
@@ -1625,6 +1649,30 @@ async function onModelChange() {
 setInterval(loadModels, 30000);
 
 // ── Init ──────────────────────────────────────────────────────────────
+// ── Online presence ───────────────────────────────────────────────────────
+const _sessionId = crypto.randomUUID();
+
+async function sendHeartbeat() {
+  try {
+    const r = await fetch('/heartbeat', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({sid: _sessionId}),
+    });
+    const d = await r.json();
+    const el = document.getElementById('online-count');
+    el.textContent = d.online + ' онлайн';
+  } catch {}
+}
+
+function sendLeave() {
+  navigator.sendBeacon('/heartbeat-leave', JSON.stringify({sid: _sessionId}));
+}
+
+sendHeartbeat();
+setInterval(sendHeartbeat, 15000);
+window.addEventListener('pagehide', sendLeave);
+
 initLangs();
 loadModels();
 document.getElementById('input').addEventListener('keydown', e => {
@@ -2342,6 +2390,30 @@ def preview_file(file_id: str):
         + "</body></html>"
     )
     return Response(content=wrapped, media_type="text/html; charset=utf-8")
+
+
+@app.post("/heartbeat")
+def heartbeat(data: dict):
+    sid = data.get("sid", "")
+    if not sid:
+        return JSONResponse({"online": 0}, status_code=400)
+    now = time.time()
+    _sessions[sid] = now
+    # Cleanup stale sessions on every heartbeat call
+    stale = [k for k, t in _sessions.items() if now - t > _SESSION_TTL]
+    for k in stale:
+        _sessions.pop(k, None)
+    return JSONResponse({"online": len(_sessions)})
+
+
+@app.post("/heartbeat-leave")
+async def heartbeat_leave(request: Request):
+    try:
+        data = await request.json()
+        _sessions.pop(data.get("sid", ""), None)
+    except Exception:
+        pass
+    return JSONResponse({"ok": True})
 
 
 if __name__ == "__main__":
