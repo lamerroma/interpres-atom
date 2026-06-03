@@ -701,6 +701,22 @@ def translate_docx_bytes(content, base_name, lang_from, lang_to, stop_event):
            translated_bytes)
 
 
+_CYRILLIC_FONT_PATHS = [
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+    "/usr/share/fonts/truetype/ubuntu/Ubuntu-R.ttf",
+    "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+    "/usr/share/fonts/noto/NotoSans-Regular.ttf",
+    "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
+]
+
+def _find_cyrillic_font() -> str | None:
+    for path in _CYRILLIC_FONT_PATHS:
+        if os.path.exists(path):
+            return path
+    return None
+
+
 def translate_pdf_bytes(content, base_name, lang_from, lang_to, stop_event):
     try:
         import fitz
@@ -713,6 +729,11 @@ def translate_pdf_bytes(content, base_name, lang_from, lang_to, stop_event):
     except Exception as e:
         yield ("error", f"Не вдалось відкрити PDF: {e}")
         return
+
+    cyrillic_font = _find_cyrillic_font()
+    font_kwargs = {"fontfile": cyrillic_font, "fontname": "cyr"} if cyrillic_font else {}
+    if not cyrillic_font:
+        yield ("log", "Увага: системний шрифт з кирилицею не знайдено, можливі '?' замість букв")
 
     total_pages = len(doc)
     yield ("log", f"PDF: {total_pages} сторінок")
@@ -790,6 +811,7 @@ def translate_pdf_bytes(content, base_name, lang_from, lang_to, stop_event):
                     fontsize=fs,
                     color=(r, g, b),
                     align=0,
+                    **font_kwargs,
                 )
                 if rc >= 0:
                     break
@@ -800,6 +822,7 @@ def translate_pdf_bytes(content, base_name, lang_from, lang_to, stop_event):
                     fontsize=4,
                     color=(r, g, b),
                     align=0,
+                    **font_kwargs,
                 )
 
         yield ("progress", f"Сторінка {page_num + 1}/{total_pages}", pct)
