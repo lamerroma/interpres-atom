@@ -12,6 +12,30 @@ import secrets
 import base64
 import time
 from urllib.parse import quote
+
+# ── Dependency check ─────────────────────────────────────────────────────────
+_REQUIRED = {
+    "requests":   "requests",
+    "fastapi":    "fastapi",
+    "pydantic":   "pydantic",
+    "docx":       "python-docx",
+    "fitz":       "pymupdf",
+    "pypdf":      "pypdf",
+    "mammoth":    "mammoth",
+    "html2text":  "html2text",
+}
+_missing = []
+for _mod, _pkg in _REQUIRED.items():
+    try:
+        __import__(_mod)
+    except ImportError:
+        _missing.append(_pkg)
+if _missing:
+    raise SystemExit(
+        f"\n[Interpres-API] Відсутні залежності: {', '.join(_missing)}\n"
+        f"Встановіть: pip install {' '.join(_missing)}\n"
+    )
+
 import requests as req_lib
 from fastapi import FastAPI, UploadFile, File, Form, Request
 from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse, Response
