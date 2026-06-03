@@ -1113,9 +1113,6 @@ USER_HTML = r"""<!DOCTYPE html>
   .conn-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; background: #94a3b8; transition: background 0.3s; }
   .conn-dot.ok { background: var(--success); }
   .conn-dot.err { background: var(--danger); }
-  .model-select-wrap { flex: 1; min-width: 200px; }
-  .model-select-wrap label { display: block; font-size: 0.78rem; color: var(--muted); margin-bottom: 4px; }
-  .model-select-wrap select { width: 100%; }
 
   .online-badge {
     display: inline-flex; align-items: center; gap: 5px;
@@ -1163,9 +1160,8 @@ USER_HTML = r"""<!DOCTYPE html>
         <span class="conn-dot" id="conn-dot"></span>
         <span id="conn-text">Перевірка...</span>
       </div>
-      <div class="model-select-wrap">
-        <label>Модель</label>
-        <select id="model_select" onchange="onModelChange()"></select>
+      <div class="conn-status">
+        <span id="model-name" style="font-size:.82rem; color:var(--muted);">—</span>
       </div>
     </div>
   </div>
@@ -1616,45 +1612,26 @@ async function doFileStop() {
 
 // ── Models & connection status ─────────────────────────────────────────
 async function loadModels() {
-  const dot  = document.getElementById('conn-dot');
-  const txt  = document.getElementById('conn-text');
-  const sel  = document.getElementById('model_select');
+  const dot   = document.getElementById('conn-dot');
+  const txt   = document.getElementById('conn-text');
+  const label = document.getElementById('model-name');
   try {
     const r    = await fetch('/models');
     const data = await r.json();
-    sel.innerHTML = '';
     if (data.ok && data.models.length > 0) {
       dot.className = 'conn-dot ok';
       txt.textContent = 'Ollama підключена';
-      data.models.forEach(m => {
-        const opt = new Option(m, m);
-        if (m === data.current) opt.selected = true;
-        sel.appendChild(opt);
-      });
-      if (!data.models.includes(data.current) && data.current) {
-        const opt = new Option(data.current + ' (не знайдено)', data.current);
-        opt.selected = true;
-        sel.insertBefore(opt, sel.firstChild);
-      }
     } else {
       dot.className = 'conn-dot err';
       txt.textContent = 'Ollama недоступна';
-      if (data.current) sel.appendChild(new Option(data.current, data.current));
     }
+    label.textContent = data.current || '—';
   } catch (e) {
     dot.className = 'conn-dot err';
     txt.textContent = "Помилка з'єднання";
   }
 }
 
-async function onModelChange() {
-  const model = document.getElementById('model_select').value;
-  await fetch('/config', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model })
-  });
-}
 
 setInterval(loadModels, 30000);
 
