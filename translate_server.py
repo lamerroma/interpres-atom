@@ -638,7 +638,7 @@ def translate_docx_bytes(content, base_name, lang_from, lang_to, stop_event):
 
     # Count batches for progress reporting
     n_batches = max(1, -(-total_chars // chunk_size))  # ceil division
-    yield ("log", f"DOCX: ~{n_batches} батчів для перекладу (режим: {insert_mode})")
+    yield ("log", f"DOCX: ~{n_batches} запитів до моделі (режим: {insert_mode})")
 
     token_stats = {"tok_in": 0, "tok_out": 0}
     batch_counter = [0]
@@ -1235,7 +1235,7 @@ USER_HTML = r"""<!DOCTYPE html>
       <div class="file-stats" id="file-stats">
         <div class="stat-cell"><div class="stat-label">Сегменти</div><div class="stat-value" id="stat-segs">—</div></div>
         <div class="stat-cell"><div class="stat-label">Символи</div><div class="stat-value" id="stat-chars">—</div></div>
-        <div class="stat-cell"><div class="stat-label">Батчі</div><div class="stat-value" id="stat-batches">—</div></div>
+        <div class="stat-cell"><div class="stat-label">Запити</div><div class="stat-value" id="stat-batches">—</div></div>
         <div class="stat-cell"><div class="stat-label">Токени in</div><div class="stat-value" id="stat-tok-in">—</div></div>
         <div class="stat-cell"><div class="stat-label">Токени out</div><div class="stat-value" id="stat-tok-out">—</div></div>
         <div class="stat-cell"><div class="stat-label">Час</div><div class="stat-value" id="stat-time">—</div></div>
@@ -1536,7 +1536,7 @@ async function doTranslateFile() {
           // Parse meta from log text
           const segsM = evt.text.match(/(\d+)\s+сегмент/);
           const charsM = evt.text.match(/(\d+)\s+симв/);
-          const batchM = evt.text.match(/~?(\d+)\s+батч/);
+          const batchM = evt.text.match(/~?(\d+)\s+запит/);
           if (segsM) statsAccum.segs = parseInt(segsM[1]);
           if (charsM) statsAccum.chars = parseInt(charsM[1]);
           if (batchM) statsAccum.batches = parseInt(batchM[1]);
