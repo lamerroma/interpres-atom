@@ -1660,7 +1660,9 @@ setInterval(loadModels, 30000);
 
 // ── Init ──────────────────────────────────────────────────────────────
 // ── Online presence ───────────────────────────────────────────────────────
-const _sessionId = crypto.randomUUID();
+const _sessionId = (typeof crypto !== 'undefined' && crypto.randomUUID)
+  ? crypto.randomUUID()
+  : Math.random().toString(36).slice(2) + Date.now().toString(36);
 
 async function sendHeartbeat() {
   try {
