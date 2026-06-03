@@ -1465,141 +1465,36 @@ ADMIN_HTML = r"""<!DOCTYPE html>
   h1 { margin-bottom: 20px; font-size: 1.4rem; color: #333; }
   .card { background: white; border-radius: 8px; padding: 20px; box-shadow: 0 1px 4px rgba(0,0,0,.1); margin-bottom: 16px; }
   label { display: block; font-size: .85rem; color: #555; margin-bottom: 4px; }
-  select, textarea, input[type=text], input[type=number] { width: 100%; border: 1px solid #ddd; border-radius: 6px; padding: 8px 10px; font-size: .95rem; font-family: inherit; }
-  textarea { resize: vertical; }
-  .row { display: flex; gap: 12px; margin-bottom: 12px; }
-  .row > div { flex: 1; }
+  input[type=text], input[type=number] { width: 100%; border: 1px solid #ddd; border-radius: 6px; padding: 8px 10px; font-size: .95rem; font-family: inherit; }
   .btn-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-  button {
-    background: #2563eb; color: white; border: none; border-radius: 6px;
-    padding: 10px 24px; font-size: 1rem; cursor: pointer; transition: background .2s;
-  }
+  button { background: #2563eb; color: white; border: none; border-radius: 6px; padding: 10px 24px; font-size: 1rem; cursor: pointer; transition: background .2s; }
   button:hover { background: #1d4ed8; }
-  button:disabled { background: #93c5fd; cursor: not-allowed; }
-  .btn-stop { background: #dc2626; display: none; }
-  .btn-stop:hover { background: #b91c1c; }
   .btn-save { background: #16a34a; }
   .btn-save:hover { background: #15803d; }
-  .btn-download { background: #16a34a; text-decoration: none; display: none; padding: 10px 20px; border-radius: 6px; font-size: 1rem; color: white; }
-  .btn-download:hover { background: #15803d; }
-  .log-box {
-    background: #1e1e1e; color: #d4d4d4; font-family: monospace; font-size: .8rem;
-    padding: 12px; border-radius: 6px; height: 160px; overflow-y: auto;
-    white-space: pre-wrap; word-break: break-all; margin-top: 12px;
-  }
-  .status { font-size: .8rem; color: #888; margin-top: 6px; }
+  .status { font-size: .8rem; color: #888; }
   .status.ok { color: #16a34a; }
   .status.err { color: #dc2626; }
-  details { margin-top: 12px; }
-  summary { font-size: .85rem; color: #555; cursor: pointer; user-select: none; }
-  summary:hover { color: #333; }
-  .hint { font-size: .75rem; color: #aaa; margin-top: 4px; }
-  .file-drop {
-    border: 2px dashed #ddd; border-radius: 6px; padding: 24px; text-align: center;
-    color: #aaa; font-size: .9rem; cursor: pointer; transition: border-color .2s, color .2s;
-  }
-  .file-drop.drag-over { border-color: #2563eb; color: #2563eb; }
-  .file-drop input { display: none; }
-  .file-name { font-size: .85rem; color: #555; margin-top: 6px; }
-  .progress-bar-wrap { height: 6px; background: #e5e7eb; border-radius: 3px; margin-top: 10px; display: none; }
-  .progress-bar { height: 100%; background: #2563eb; border-radius: 3px; width: 0; transition: width .3s; }
-  .settings-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px; }
+  details { margin-top: 0; }
+  summary { font-size: 1rem; font-weight: 600; color: #333; cursor: pointer; user-select: none; }
+  summary:hover { color: #2563eb; }
+  .settings-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 16px; }
   .settings-grid .full { grid-column: 1 / -1; }
-  .section-title { font-size: 1rem; font-weight: 600; color: #333; margin-bottom: 12px; }
+  .back-link { display: inline-block; margin-bottom: 16px; font-size: .9rem; color: #2563eb; text-decoration: none; }
+  .back-link:hover { text-decoration: underline; }
 </style>
 </head>
 <body>
-<div style="background:#fef9c3; border:1px solid #fde047; border-radius:8px; padding:14px 20px; margin-bottom:20px; display:flex; align-items:center; gap:12px;">
-  <span style="font-size:1.4rem;">🧪</span>
-  <div>
-    <strong style="color:#854d0e;">Тестовий режим</strong>
-    <span style="color:#713f12; font-size:.9rem;"> — сервіс працює в режимі тестування. Обробка одного запиту може займати до <strong>5 хвилин</strong>. Дякуємо за терпіння!</span>
-  </div>
-</div>
-<h1>LocalAI Перекладач</h1>
-
-<!-- Language selectors + Advanced (shared) -->
-<div class="card">
-  <div class="row">
-    <div>
-      <label>Перекласти з</label>
-      <select id="lang_from"></select>
-    </div>
-    <div>
-      <label>Перекласти на</label>
-      <select id="lang_to"></select>
-    </div>
-  </div>
-
-</div>
-
-<!-- Text translation -->
-<div class="card">
-  <label style="margin-bottom:8px; font-size:1rem; color:#333; font-weight:600;">Переклад тексту</label>
-  <div style="margin-bottom:12px; margin-top:8px;">
-    <textarea id="input" rows="6" placeholder="Введіть текст тут..."></textarea>
-  </div>
-  <div id="queue-banner" style="display:none; background:#fff7ed; border:1px solid #fb923c; border-radius:8px; padding:12px 16px; margin-bottom:12px; gap:10px;">
-    <span style="font-size:1.3rem;">⏳</span>
-    <div>
-      <strong style="color:#9a3412;">Запит у черзі</strong>
-      <span id="queue-banner-text" style="color:#7c2d12; font-size:.9rem;"></span>
-    </div>
-  </div>
-  <div class="btn-row">
-    <button id="btn" onclick="doTranslate()">Перекласти</button>
-    <button id="stopBtn" class="btn-stop" onclick="doStop()">Зупинити</button>
-    <span class="status" id="status"></span>
-  </div>
-</div>
-
-<div class="card">
-  <label style="margin-bottom:8px">Результат перекладу</label>
-  <textarea id="result" rows="6" readonly placeholder="Результат з'явиться тут..."></textarea>
-</div>
-
-<div class="card" id="thinking-card" style="display:none;">
-  <details id="thinking-details">
-    <summary style="font-size:.85rem; color:#7c3aed; cursor:pointer; user-select:none;">&#129504; Думки моделі</summary>
-    <div id="thinking" style="background:#faf5ff; border:1px solid #e9d5ff; border-radius:6px; padding:10px; margin-top:8px; font-family:monospace; font-size:.78rem; color:#4c1d95; white-space:pre-wrap; word-break:break-word; max-height:300px; overflow-y:auto;"></div>
-  </details>
-</div>
-
-<div class="card">
-  <label style="margin-bottom:8px">Лог</label>
-  <div id="log" class="log-box"></div>
-</div>
-
-<!-- File translation -->
-<div class="card">
-  <label style="margin-bottom:8px; font-size:1rem; color:#333; font-weight:600;">Переклад файлу</label>
-  <div style="margin-top:8px; margin-bottom:12px;">
-    <div class="file-drop" id="file-drop" onclick="document.getElementById('file-input').click()"
-         ondragover="fileDragOver(event)" ondragleave="fileDragLeave(event)" ondrop="fileDrop(event)">
-      <input type="file" id="file-input" accept=".pdf,.txt,.docx" onchange="fileSelected(this)">
-      Натисніть або перетягніть файл сюди<br>
-      <span style="font-size:.75rem">PDF, DOCX, TXT</span>
-    </div>
-    <div class="file-name" id="file-name"></div>
-    <div class="progress-bar-wrap" id="progress-wrap"><div class="progress-bar" id="progress-bar"></div></div>
-  </div>
-  <div class="btn-row">
-    <button id="file-btn" onclick="doTranslateFile()">Перекласти файл</button>
-    <button id="file-stopBtn" class="btn-stop" onclick="doFileStop()">Зупинити</button>
-    <a id="download-link" class="btn-download">&#8595; Завантажити</a>
-    <span class="status" id="file-status"></span>
-  </div>
-  <div id="file-log" class="log-box" style="display:none;"></div>
-</div>
+<a class="back-link" href="/">&#8592; На головну</a>
+<h1>Адміністрування</h1>
 
 <!-- Stats -->
 <div class="card">
   <details id="stats-details">
-    <summary class="section-title" style="margin-bottom:0">&#128202; Статистика</summary>
-    <div style="margin-top:12px;">
+    <summary>&#128202; Статистика</summary>
+    <div style="margin-top:16px;">
       <div id="stats-summary" style="display:grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap:10px; margin-bottom:14px;"></div>
       <div style="overflow-x:auto;">
-        <table id="stats-table" style="width:100%; border-collapse: collapse; font-size: .82rem;">
+        <table style="width:100%; border-collapse:collapse; font-size:.82rem;">
           <thead>
             <tr style="background:#f1f5f9; text-align:left;">
               <th style="padding:6px 8px; border-bottom:1px solid #e2e8f0;">Час</th>
@@ -1627,15 +1522,15 @@ ADMIN_HTML = r"""<!DOCTYPE html>
 <!-- Settings -->
 <div class="card">
   <details id="settings-details">
-    <summary class="section-title" style="margin-bottom:0">&#9881; Налаштування</summary>
+    <summary>&#9881; Налаштування</summary>
     <div class="settings-grid">
       <div class="full">
-        <label>LocalAI URL</label>
-        <input type="text" id="cfg_base_url" placeholder="http://192.168.x.x:port/v1">
+        <label>Ollama URL</label>
+        <input type="text" id="cfg_base_url" placeholder="http://127.0.0.1:11434/v1">
       </div>
       <div class="full">
         <label>Модель</label>
-        <input type="text" id="cfg_model" placeholder="назва моделі як у LocalAI">
+        <input type="text" id="cfg_model" placeholder="назва моделі">
       </div>
       <div>
         <label>Макс. токенів</label>
@@ -1653,43 +1548,41 @@ ADMIN_HTML = r"""<!DOCTYPE html>
         <label>Макс. сторінок PDF</label>
         <input type="number" id="cfg_max_pdf_pages" min="1" max="500" step="1">
       </div>
-      <div>
+      <div class="full">
         <label>Макс. символів (текст/DOCX/TXT)</label>
         <input type="number" id="cfg_max_chars" min="1000" max="1000000" step="1000">
       </div>
-      <div></div>
     </div>
-    <div class="btn-row" style="margin-top:12px">
+    <div class="btn-row" style="margin-top:16px;">
       <button class="btn-save" onclick="saveSettings()">Зберегти</button>
-      <button onclick="resetSettings()" style="background:#6b7280">Скинути до стандартних</button>
+      <button onclick="resetSettings()" style="background:#6b7280;">Скинути до стандартних</button>
       <span class="status" id="cfg-status"></span>
     </div>
   </details>
 </div>
 
 <script>
-// ── Settings ──────────────────────────────────────────────────────────
 async function loadSettings() {
   const r = await fetch('/config');
   const cfg = await r.json();
-  document.getElementById('cfg_base_url').value        = cfg.base_url        ?? '';
-  document.getElementById('cfg_model').value           = cfg.model           ?? '';
-  document.getElementById('cfg_max_tokens').value      = cfg.max_tokens      ?? 2048;
-  document.getElementById('cfg_llm_timeout').value     = cfg.llm_timeout     ?? 180;
-  document.getElementById('cfg_chunk_size').value      = cfg.chunk_size      ?? 3000;
-  document.getElementById('cfg_max_pdf_pages').value   = cfg.max_pdf_pages   ?? 10;
-  document.getElementById('cfg_max_chars').value       = cfg.max_chars       ?? 30000;
+  document.getElementById('cfg_base_url').value      = cfg.base_url      ?? '';
+  document.getElementById('cfg_model').value         = cfg.model         ?? '';
+  document.getElementById('cfg_max_tokens').value    = cfg.max_tokens    ?? 2048;
+  document.getElementById('cfg_llm_timeout').value   = cfg.llm_timeout   ?? 180;
+  document.getElementById('cfg_chunk_size').value    = cfg.chunk_size    ?? 3000;
+  document.getElementById('cfg_max_pdf_pages').value = cfg.max_pdf_pages ?? 10;
+  document.getElementById('cfg_max_chars').value     = cfg.max_chars     ?? 30000;
 }
 
 async function saveSettings() {
   const cfg = {
-    base_url:        document.getElementById('cfg_base_url').value.trim(),
-    model:           document.getElementById('cfg_model').value.trim(),
-    max_tokens:      parseInt(document.getElementById('cfg_max_tokens').value),
-    llm_timeout:     parseInt(document.getElementById('cfg_llm_timeout').value),
-    chunk_size:      parseInt(document.getElementById('cfg_chunk_size').value),
-    max_pdf_pages:   parseInt(document.getElementById('cfg_max_pdf_pages').value),
-    max_chars:       parseInt(document.getElementById('cfg_max_chars').value),
+    base_url:      document.getElementById('cfg_base_url').value.trim(),
+    model:         document.getElementById('cfg_model').value.trim(),
+    max_tokens:    parseInt(document.getElementById('cfg_max_tokens').value),
+    llm_timeout:   parseInt(document.getElementById('cfg_llm_timeout').value),
+    chunk_size:    parseInt(document.getElementById('cfg_chunk_size').value),
+    max_pdf_pages: parseInt(document.getElementById('cfg_max_pdf_pages').value),
+    max_chars:     parseInt(document.getElementById('cfg_max_chars').value),
   };
   const st = document.getElementById('cfg-status');
   try {
@@ -1704,275 +1597,24 @@ async function saveSettings() {
 async function resetSettings() {
   const r = await fetch('/config/defaults');
   const cfg = await r.json();
-  document.getElementById('cfg_base_url').value        = cfg.base_url;
-  document.getElementById('cfg_model').value           = cfg.model;
-  document.getElementById('cfg_max_tokens').value      = cfg.max_tokens;
-  document.getElementById('cfg_llm_timeout').value     = cfg.llm_timeout;
-  document.getElementById('cfg_chunk_size').value      = cfg.chunk_size;
-  document.getElementById('cfg_max_pdf_pages').value   = cfg.max_pdf_pages;
-  document.getElementById('cfg_max_chars').value       = cfg.max_chars;
+  document.getElementById('cfg_base_url').value      = cfg.base_url;
+  document.getElementById('cfg_model').value         = cfg.model;
+  document.getElementById('cfg_max_tokens').value    = cfg.max_tokens;
+  document.getElementById('cfg_llm_timeout').value   = cfg.llm_timeout;
+  document.getElementById('cfg_chunk_size').value    = cfg.chunk_size;
+  document.getElementById('cfg_max_pdf_pages').value = cfg.max_pdf_pages;
+  document.getElementById('cfg_max_chars').value     = cfg.max_chars;
 }
 
-// ── Text translation ──────────────────────────────────────────────────
-let _controller = null;
-let _requestId = null;
-let _thinkMode = false;
-let _tagBuf = '';
-
-function handleToken(text) {
-  const resultEl = document.getElementById('result');
-  const thinkEl  = document.getElementById('thinking');
-  const thinkCard = document.getElementById('thinking-card');
-  _tagBuf += text;
-  while (_tagBuf.length > 0) {
-    if (_thinkMode) {
-      const end = _tagBuf.indexOf('</think>');
-      if (end !== -1) {
-        thinkEl.textContent += _tagBuf.slice(0, end);
-        thinkEl.scrollTop = thinkEl.scrollHeight;
-        _tagBuf = _tagBuf.slice(end + 8);
-        _thinkMode = false;
-      } else if (_tagBuf.length > 8) {
-        const safe = _tagBuf.slice(0, _tagBuf.length - 8);
-        thinkEl.textContent += safe;
-        thinkEl.scrollTop = thinkEl.scrollHeight;
-        _tagBuf = _tagBuf.slice(safe.length);
-        break;
-      } else { break; }
-    } else {
-      const start = _tagBuf.indexOf('<think>');
-      if (start !== -1) {
-        resultEl.value += _tagBuf.slice(0, start);
-        _tagBuf = _tagBuf.slice(start + 7);
-        _thinkMode = true;
-        thinkCard.style.display = 'block';
-        document.getElementById('thinking-details').open = true;
-      } else if (_tagBuf.length > 7) {
-        const safe = _tagBuf.slice(0, _tagBuf.length - 7);
-        resultEl.value += safe;
-        _tagBuf = _tagBuf.slice(safe.length);
-        break;
-      } else { break; }
-    }
-  }
-}
-
-function setWorking(on) {
-  document.getElementById('btn').disabled = on;
-  document.getElementById('stopBtn').style.display = on ? 'inline-block' : 'none';
-}
-
-async function doStop() {
-  if (_controller) { _controller.abort(); _controller = null; }
-  if (_requestId) {
-    await fetch('/stop/' + _requestId, { method: 'POST' }).catch(() => {});
-    _requestId = null;
-  }
-  document.getElementById('queue-banner').style.display = 'none';
-  document.getElementById('status').textContent = 'Зупинено';
-  setWorking(false);
-}
-
-async function doTranslate() {
-  const text = document.getElementById('input').value.trim();
-  if (!text) { document.getElementById('status').textContent = 'ПОМИЛКА: текст порожній'; return; }
-
-  const log = document.getElementById('log');
-  const result = document.getElementById('result');
-  const status = document.getElementById('status');
-
-  setWorking(true);
-  document.getElementById('queue-banner').style.display = 'none';
-  log.textContent = '';
-  result.value = '';
-  status.textContent = 'Перекладаю...';
-  document.getElementById('thinking').textContent = '';
-  document.getElementById('thinking-card').style.display = 'none';
-  _thinkMode = false;
-  _tagBuf = '';
-
-  const startTime = Date.now();
-  _controller = new AbortController();
-
-  try {
-    const response = await fetch('/translate', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      signal: _controller.signal,
-      body: JSON.stringify({
-        text,
-        lang_from: document.getElementById('lang_from').value,
-        lang_to: document.getElementById('lang_to').value,
-      }),
-    });
-
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop();
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue;
-        let evt; try { evt = JSON.parse(line.slice(6)); } catch { continue; }
-        if (evt.type === 'id') { _requestId = evt.text; }
-        else if (evt.type === 'thinking') {
-          const thinkingCard = document.getElementById('thinking-card');
-          const thinkingBox = document.getElementById('thinking');
-          const details = document.getElementById('thinking-details');
-          thinkingCard.style.display = 'block';
-          details.open = true;
-          thinkingBox.textContent += evt.text;
-          thinkingBox.scrollTop = thinkingBox.scrollHeight;
-        }
-        else if (evt.type === 'queue') {
-          const banner = document.getElementById('queue-banner');
-          const bannerText = document.getElementById('queue-banner-text');
-          if (evt.ahead > 0) {
-            bannerText.textContent = ` — попереду ${evt.ahead} запит${evt.ahead > 1 ? 'и' : ''}. Очікуйте...`;
-            banner.style.cssText = 'display:flex; align-items:center; gap:10px; background:#fff7ed; border:1px solid #fb923c; border-radius:8px; padding:12px 16px; margin-bottom:12px;';
-            status.textContent = '';
-          } else {
-            banner.style.display = 'none';
-            status.textContent = 'Перекладаю...';
-          }
-        }
-        else if (evt.type === 'log') { log.textContent += evt.text + '\n'; log.scrollTop = log.scrollHeight; }
-        else if (evt.type === 'token') { handleToken(evt.text); }
-        else if (evt.type === 'result') {
-          result.value = evt.text;
-          status.textContent = `Готово за ${((Date.now()-startTime)/1000).toFixed(1)}с`;
-        } else if (evt.type === 'error') { result.value = 'Помилка: ' + evt.text; status.textContent = 'Помилка'; }
-      }
-    }
-  } catch (e) {
-    if (e.name !== 'AbortError') { log.textContent += 'Помилка запиту: ' + e + '\n'; status.textContent = 'Помилка'; }
-  }
-  setWorking(false); _controller = null; _requestId = null;
-}
-
-document.getElementById('input').addEventListener('keydown', e => {
-  if (e.ctrlKey && e.key === 'Enter') doTranslate();
-});
-
-// ── File translation ──────────────────────────────────────────────────
-let _fileController = null;
-let _fileRequestId = null;
-let _selectedFile = null;
-
-function setFileWorking(on) {
-  document.getElementById('file-btn').disabled = on;
-  document.getElementById('file-stopBtn').style.display = on ? 'inline-block' : 'none';
-  if (on) document.getElementById('download-link').style.display = 'none';
-}
-
-function fileSelected(input) {
-  _selectedFile = input.files[0] || null;
-  document.getElementById('file-name').textContent = _selectedFile ? _selectedFile.name : '';
-}
-
-function fileDragOver(e) { e.preventDefault(); document.getElementById('file-drop').classList.add('drag-over'); }
-function fileDragLeave(e) { document.getElementById('file-drop').classList.remove('drag-over'); }
-function fileDrop(e) {
-  e.preventDefault();
-  document.getElementById('file-drop').classList.remove('drag-over');
-  const f = e.dataTransfer.files[0];
-  if (f) { _selectedFile = f; document.getElementById('file-name').textContent = f.name; }
-}
-
-async function doFileStop() {
-  if (_fileController) { _fileController.abort(); _fileController = null; }
-  if (_fileRequestId) {
-    await fetch('/stop/' + _fileRequestId, { method: 'POST' }).catch(() => {});
-    _fileRequestId = null;
-  }
-  document.getElementById('file-status').textContent = 'Зупинено';
-  setFileWorking(false);
-  document.getElementById('progress-wrap').style.display = 'none';
-}
-
-async function doTranslateFile() {
-  if (!_selectedFile) { document.getElementById('file-status').textContent = 'Спочатку оберіть файл'; return; }
-
-  const fileLog = document.getElementById('file-log');
-  const fileStatus = document.getElementById('file-status');
-  const progressWrap = document.getElementById('progress-wrap');
-  const progressBar = document.getElementById('progress-bar');
-
-  setFileWorking(true);
-  fileLog.style.display = 'block';
-  fileLog.textContent = '';
-  progressWrap.style.display = 'block';
-  progressBar.style.width = '0%';
-  fileStatus.textContent = 'Завантаження...';
-
-  const startTime = Date.now();
-  _fileController = new AbortController();
-
-  const formData = new FormData();
-  formData.append('file', _selectedFile, _selectedFile.name);
-  formData.append('lang_from', document.getElementById('lang_from').value);
-  formData.append('lang_to', document.getElementById('lang_to').value);
-
-  try {
-    const response = await fetch('/translate-file', {
-      method: 'POST',
-      signal: _fileController.signal,
-      body: formData,
-    });
-
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop();
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue;
-        let evt; try { evt = JSON.parse(line.slice(6)); } catch { continue; }
-        if (evt.type === 'id') { _fileRequestId = evt.text; }
-        else if (evt.type === 'log') { fileLog.textContent += evt.text + '\n'; fileLog.scrollTop = fileLog.scrollHeight; }
-        else if (evt.type === 'progress') {
-          fileStatus.textContent = evt.text;
-          if (evt.pct !== undefined) progressBar.style.width = evt.pct + '%';
-        } else if (evt.type === 'download') {
-          const link = document.getElementById('download-link');
-          link.href = evt.url;
-          link.download = evt.filename;
-          link.style.display = 'inline-block';
-          progressBar.style.width = '100%';
-          fileStatus.textContent = `Готово за ${((Date.now()-startTime)/1000).toFixed(1)}с`;
-        } else if (evt.type === 'error') {
-          fileStatus.textContent = 'Помилка: ' + evt.text;
-          progressWrap.style.display = 'none';
-        }
-      }
-    }
-  } catch (e) {
-    if (e.name !== 'AbortError') { fileLog.textContent += 'Помилка запиту: ' + e + '\n'; fileStatus.textContent = 'Помилка'; }
-  }
-  setFileWorking(false); _fileController = null; _fileRequestId = null;
-}
-
-// ── Stats ─────────────────────────────────────────────────────────────
 async function loadStats() {
   try {
     const r = await fetch('/admin/stats?limit=100');
     const d = await r.json();
     const s = d.summary || {};
     const cards = [
-      ['Всього', s.total ?? 0],
-      ['Успішно', s.success ?? 0],
-      ['Помилки', s.errors ?? 0],
-      ['Зупинено', s.stopped ?? 0],
-      ['Символів', s.total_chars ?? 0],
-      ['Сторінок', s.total_pages ?? 0],
+      ['Всього', s.total ?? 0], ['Успішно', s.success ?? 0],
+      ['Помилки', s.errors ?? 0], ['Зупинено', s.stopped ?? 0],
+      ['Символів', s.total_chars ?? 0], ['Сторінок', s.total_pages ?? 0],
       ['Секунд', Math.round(s.total_seconds ?? 0)],
     ];
     document.getElementById('stats-summary').innerHTML = cards.map(([k, v]) =>
@@ -1980,29 +1622,24 @@ async function loadStats() {
          <div style="font-size:.7rem; color:#64748b; text-transform:uppercase;">${k}</div>
          <div style="font-size:1.2rem; font-weight:600; color:#1e293b; margin-top:2px;">${v}</div>
        </div>`).join('');
-
-    const statusColor = {
-      success: '#16a34a', error: '#dc2626', stopped: '#f59e0b',
-    };
+    const sc = { success:'#16a34a', error:'#dc2626', stopped:'#f59e0b' };
     const rows = (d.recent || []).map(r => {
-      const t = (r.timestamp || '').replace('T', ' ').slice(5, 19);
-      const langs = `${r.lang_from || ''}→${r.lang_to || ''}`;
-      const color = statusColor[r.status] || '#64748b';
+      const t = (r.timestamp||'').replace('T',' ').slice(5,19);
       return `<tr>
         <td style="padding:5px 8px; border-bottom:1px solid #f1f5f9;">${t}</td>
-        <td style="padding:5px 8px; border-bottom:1px solid #f1f5f9;">${r.ip || ''}</td>
-        <td style="padding:5px 8px; border-bottom:1px solid #f1f5f9;">${r.kind || ''}</td>
-        <td style="padding:5px 8px; border-bottom:1px solid #f1f5f9; max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${r.filename || ''}</td>
-        <td style="padding:5px 8px; border-bottom:1px solid #f1f5f9;">${langs}</td>
-        <td style="padding:5px 8px; border-bottom:1px solid #f1f5f9; text-align:right;">${r.chars ?? ''}</td>
-        <td style="padding:5px 8px; border-bottom:1px solid #f1f5f9; text-align:right;">${r.pages ?? ''}</td>
-        <td style="padding:5px 8px; border-bottom:1px solid #f1f5f9; text-align:right;">${r.duration ?? ''}</td>
-        <td style="padding:5px 8px; border-bottom:1px solid #f1f5f9; color:${color}; font-weight:500;">${r.status}</td>
-        <td style="padding:5px 8px; border-bottom:1px solid #f1f5f9; color:#dc2626; max-width:250px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${(r.error || '').replace(/"/g, '&quot;')}">${r.error || ''}</td>
+        <td style="padding:5px 8px; border-bottom:1px solid #f1f5f9;">${r.ip||''}</td>
+        <td style="padding:5px 8px; border-bottom:1px solid #f1f5f9;">${r.kind||''}</td>
+        <td style="padding:5px 8px; border-bottom:1px solid #f1f5f9; max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${r.filename||''}</td>
+        <td style="padding:5px 8px; border-bottom:1px solid #f1f5f9;">${r.lang_from||''}→${r.lang_to||''}</td>
+        <td style="padding:5px 8px; border-bottom:1px solid #f1f5f9; text-align:right;">${r.chars??''}</td>
+        <td style="padding:5px 8px; border-bottom:1px solid #f1f5f9; text-align:right;">${r.pages??''}</td>
+        <td style="padding:5px 8px; border-bottom:1px solid #f1f5f9; text-align:right;">${r.duration??''}</td>
+        <td style="padding:5px 8px; border-bottom:1px solid #f1f5f9; color:${sc[r.status]||'#64748b'}; font-weight:500;">${r.status}</td>
+        <td style="padding:5px 8px; border-bottom:1px solid #f1f5f9; color:#dc2626; max-width:250px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${(r.error||'').replace(/"/g,'&quot;')}">${r.error||''}</td>
       </tr>`;
     }).join('');
     document.getElementById('stats-tbody').innerHTML = rows || '<tr><td colspan="10" style="padding:20px; text-align:center; color:#94a3b8;">Немає даних</td></tr>';
-  } catch (e) {
+  } catch(e) {
     document.getElementById('stats-tbody').innerHTML = `<tr><td colspan="10" style="padding:10px; color:#dc2626;">Помилка: ${e}</td></tr>`;
   }
 }
@@ -2011,22 +1648,6 @@ document.getElementById('stats-details').addEventListener('toggle', e => {
   if (e.target.open) loadStats();
 });
 
-// ── Init selects ──────────────────────────────────────────────────────
-async function initSelects() {
-  const r = await fetch('/languages');
-  const langs = await r.json();
-  const from = document.getElementById('lang_from');
-  const to   = document.getElementById('lang_to');
-  from.appendChild(new Option('Автовизначення', 'auto'));
-  langs.forEach(({ label, value }) => {
-    from.appendChild(new Option(label, value));
-    to.appendChild(new Option(label, value));
-  });
-  to.value = 'Ukrainian';
-}
-
-// ── Init ──────────────────────────────────────────────────────────────
-initSelects();
 loadSettings();
 </script>
 </body>
