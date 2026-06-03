@@ -1064,7 +1064,7 @@ USER_HTML = r"""<!DOCTYPE html>
   @media (max-width: 640px) {
     .split-layout { grid-template-columns: 1fr; }
   }
-  .split-panel { display: flex; flex-direction: column; }
+  .split-panel { display: flex; flex-direction: column; min-width: 0; overflow: hidden; }
   .panel-label {
     font-size: 0.8rem; color: var(--muted); font-weight: 500;
     margin-bottom: 8px; display: flex; align-items: center; gap: 8px; min-height: 22px;
