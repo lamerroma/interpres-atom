@@ -1399,8 +1399,53 @@ async function doFileStop() {
   setWorking('file', false);
 }
 
+// ── Models & connection status ─────────────────────────────────────────
+async function loadModels() {
+  const dot  = document.getElementById('conn-dot');
+  const txt  = document.getElementById('conn-text');
+  const sel  = document.getElementById('model_select');
+  try {
+    const r    = await fetch('/models');
+    const data = await r.json();
+    sel.innerHTML = '';
+    if (data.ok && data.models.length > 0) {
+      dot.className = 'conn-dot ok';
+      txt.textContent = 'Ollama підключена';
+      data.models.forEach(m => {
+        const opt = new Option(m, m);
+        if (m === data.current) opt.selected = true;
+        sel.appendChild(opt);
+      });
+      if (!data.models.includes(data.current) && data.current) {
+        const opt = new Option(data.current + ' (не знайдено)', data.current);
+        opt.selected = true;
+        sel.insertBefore(opt, sel.firstChild);
+      }
+    } else {
+      dot.className = 'conn-dot err';
+      txt.textContent = 'Ollama недоступна';
+      if (data.current) sel.appendChild(new Option(data.current, data.current));
+    }
+  } catch (e) {
+    dot.className = 'conn-dot err';
+    txt.textContent = "Помилка з'єднання";
+  }
+}
+
+async function onModelChange() {
+  const model = document.getElementById('model_select').value;
+  await fetch('/config', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model })
+  });
+}
+
+setInterval(loadModels, 30000);
+
 // ── Init ──────────────────────────────────────────────────────────────
 initLangs();
+loadModels();
 document.getElementById('input').addEventListener('keydown', e => {
   if (e.ctrlKey && e.key === 'Enter') doTranslate();
 });
@@ -1980,53 +2025,8 @@ async function initSelects() {
   to.value = 'Ukrainian';
 }
 
-// ── Models & connection status ─────────────────────────────────────────
-async function loadModels() {
-  const dot  = document.getElementById('conn-dot');
-  const txt  = document.getElementById('conn-text');
-  const sel  = document.getElementById('model_select');
-  try {
-    const r    = await fetch('/models');
-    const data = await r.json();
-    sel.innerHTML = '';
-    if (data.ok && data.models.length > 0) {
-      dot.className = 'conn-dot ok';
-      txt.textContent = 'Ollama підключена';
-      data.models.forEach(m => {
-        const opt = new Option(m, m);
-        if (m === data.current) opt.selected = true;
-        sel.appendChild(opt);
-      });
-      if (!data.models.includes(data.current) && data.current) {
-        const opt = new Option(data.current + ' (не знайдено)', data.current);
-        opt.selected = true;
-        sel.insertBefore(opt, sel.firstChild);
-      }
-    } else {
-      dot.className = 'conn-dot err';
-      txt.textContent = 'Ollama недоступна';
-      if (data.current) sel.appendChild(new Option(data.current, data.current));
-    }
-  } catch (e) {
-    dot.className = 'conn-dot err';
-    txt.textContent = 'Помилка з\'єднання';
-  }
-}
-
-async function onModelChange() {
-  const model = document.getElementById('model_select').value;
-  await fetch('/config', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model })
-  });
-}
-
-setInterval(loadModels, 30000);
-
 // ── Init ──────────────────────────────────────────────────────────────
 initSelects();
-loadModels();
 loadSettings();
 </script>
 </body>
