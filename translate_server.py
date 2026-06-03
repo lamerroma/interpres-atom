@@ -1206,7 +1206,7 @@ USER_HTML = r"""<!DOCTYPE html>
   .help-modal.open { display: flex; }
   .help-box {
     background: var(--card); border-radius: 14px;
-    padding: 28px 32px; max-width: 540px; width: 90%;
+    padding: 28px 32px; max-width: 810px; width: 90%;
     box-shadow: 0 8px 32px rgba(0,0,0,.18);
     position: relative; max-height: 80vh; overflow-y: auto;
   }
