@@ -1638,7 +1638,7 @@ USER_HTML = r"""<!DOCTYPE html>
   <div class="footer">
     <a href="/admin">Адміністрування</a>
     <span style="margin: 0 12px; color: var(--border);">|</span>
-    <span>v1.21</span>
+    <span>v1.22</span>
   </div>
 </div>
 
@@ -2248,6 +2248,8 @@ ADMIN_HTML = r"""<!DOCTYPE html>
       <div class="settings-section-body">
         <div class="format-tabs">
           <button class="format-tab active" onclick="switchFormatTab('docx', this)">DOCX</button>
+          <button class="format-tab" onclick="switchFormatTab('pptx', this)">PPTX</button>
+          <button class="format-tab" onclick="switchFormatTab('xlsx', this)">XLSX</button>
           <button class="format-tab" onclick="switchFormatTab('pdf', this)">PDF</button>
           <button class="format-tab" onclick="switchFormatTab('txt', this)">TXT</button>
         </div>
@@ -2269,6 +2271,22 @@ ADMIN_HTML = r"""<!DOCTYPE html>
             <label>Розмір чанка (символів на запит до моделі)</label>
             <input type="number" id="cfg_chunk_size" min="500" max="20000" step="100">
           </div>
+          <div class="full">
+            <label>Макс. символів файлу (DOCX / PPTX / XLSX / TXT)</label>
+            <input type="number" id="cfg_max_chars" min="1000" max="1000000" step="1000">
+          </div>
+        </div>
+        <!-- PPTX -->
+        <div id="format-tab-pptx" class="settings-grid" style="display:none">
+          <div class="full" style="color:#6b7280;font-size:.875rem;padding:4px 0;">
+            PPTX використовує ті самі налаштування що й DOCX: режим вставки, роздільник, розмір чанка та ліміт символів.
+          </div>
+        </div>
+        <!-- XLSX -->
+        <div id="format-tab-xlsx" class="settings-grid" style="display:none">
+          <div class="full" style="color:#6b7280;font-size:.875rem;padding:4px 0;">
+            XLSX використовує ті самі налаштування що й DOCX: режим вставки, роздільник, розмір чанка та ліміт символів.
+          </div>
         </div>
         <!-- PDF -->
         <div id="format-tab-pdf" class="settings-grid" style="display:none">
@@ -2279,9 +2297,8 @@ ADMIN_HTML = r"""<!DOCTYPE html>
         </div>
         <!-- TXT -->
         <div id="format-tab-txt" class="settings-grid" style="display:none">
-          <div class="full">
-            <label>Макс. символів (текст / TXT)</label>
-            <input type="number" id="cfg_max_chars" min="1000" max="1000000" step="1000">
+          <div class="full" style="color:#6b7280;font-size:.875rem;padding:4px 0;">
+            TXT використовує ліміт символів та розмір чанка з вкладки DOCX.
           </div>
         </div>
       </div>
@@ -2302,7 +2319,7 @@ function toggleSeparator() {
 }
 
 function switchFormatTab(tab, btn) {
-  ['docx','pdf','txt'].forEach(t => {
+  ['docx','pptx','xlsx','pdf','txt'].forEach(t => {
     document.getElementById('format-tab-' + t).style.display = (t === tab) ? '' : 'none';
   });
   document.querySelectorAll('.format-tab').forEach(b => b.classList.remove('active'));
