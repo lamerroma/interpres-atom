@@ -36,6 +36,20 @@ if _missing:
         f"Встановіть: pip install {' '.join(_missing)}\n"
     )
 
+_OPTIONAL = {"pptx": "python-pptx", "regex": "regex"}
+_missing_opt = []
+for _mod, _pkg in _OPTIONAL.items():
+    try:
+        __import__(_mod)
+    except ImportError:
+        _missing_opt.append(_pkg)
+if _missing_opt:
+    import logging as _log_startup
+    _log_startup.warning(
+        f"[Interpres-Atom] Опціональні залежності відсутні: {', '.join(_missing_opt)} "
+        f"— переклад PPTX недоступний. Встановіть: pip install {' '.join(_missing_opt)}"
+    )
+
 import requests as req_lib
 from fastapi import FastAPI, UploadFile, File, Form, Request
 from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse, Response
@@ -961,6 +975,154 @@ def translate_txt_bytes(content, base_name, lang_from, lang_to, stop_event):
            final.encode("utf-8"))
 
 
+def translate_pptx_bytes(content, base_name, lang_from, lang_to, stop_event):
+    """Generator. Yields ('log'|'progress'|'error'|'stopped'|'done', ...)."""
+    try:
+        from pptx_translate import translate_pptx, _collect_all_segments as _pptx_segments
+        from pptx import Presentation as _Prs
+    except ImportError as e:
+        yield ("error", f"Не вдалось імпортувати модуль перекладу PPTX: {e}")
+        return
+
+    try:
+        prs_check = _Prs(io.BytesIO(content))
+        _, originals = _pptx_segments(prs_check)
+    except Exception as e:
+        yield ("error", f"Не вдалось відкрити PPTX: {e}")
+        return
+
+    total_chars = sum(len(t) for t in originals)
+    total_segs = len(originals)
+    yield ("log", f"PPTX: {total_segs} сегментів, {total_chars} символів")
+
+    if total_segs == 0:
+        yield ("error", "У файлі не знайдено тексту для перекладу")
+        return
+
+    max_chars = CFG.get("max_chars", 30000)
+    if total_chars > max_chars:
+        yield ("error",
+               f"Файл занадто великий: {total_chars} символів "
+               f"(максимум {max_chars})")
+        return
+
+    yield ("meta", {"chars": total_chars, "pages": None})
+
+    target_lang = lang_to if lang_to else "Ukrainian"
+    chunk_size  = CFG.get("chunk_size",  3000)
+    insert_mode = CFG.get("insert_mode", "replace")
+    separator   = CFG.get("separator",   "\n")
+    n_batches   = max(1, -(-total_chars // chunk_size))
+    yield ("log", f"PPTX: ~{n_batches} запитів до моделі (режим: {insert_mode})")
+
+    token_stats = {"tok_in": 0, "tok_out": 0}
+
+    def translate_batch_with_progress(batch, lang, stop_ev):
+        return _translate_json_segments(batch, lang, stop_ev, token_stats=token_stats)
+
+    try:
+        translated_bytes = translate_pptx(
+            content,
+            target_lang,
+            translate_batch_with_progress,
+            stop_event,
+            chunk_size=chunk_size,
+            insert_mode=insert_mode,
+            separator=separator,
+        )
+    except Exception as e:
+        if stop_event.is_set():
+            yield ("stopped",)
+        else:
+            yield ("error", f"Помилка перекладу PPTX: {e}")
+        return
+
+    if stop_event.is_set():
+        yield ("stopped",)
+        return
+
+    yield ("progress", "Завершено", 100)
+    yield ("stats", token_stats["tok_in"], token_stats["tok_out"])
+    yield ("done",
+           f"{base_name}_translated.pptx",
+           "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+           translated_bytes)
+
+
+def translate_xlsx_bytes(content, base_name, lang_from, lang_to, stop_event):
+    """Generator. Yields ('log'|'progress'|'error'|'stopped'|'done', ...)."""
+    try:
+        from xlsx_translate import translate_xlsx, _collect_texts as _xlsx_texts
+        import zipfile as _zf
+    except ImportError as e:
+        yield ("error", f"Не вдалось імпортувати модуль перекладу XLSX: {e}")
+        return
+
+    try:
+        with _zf.ZipFile(io.BytesIO(content), 'r') as zf:
+            originals = _xlsx_texts(zf)
+    except Exception as e:
+        yield ("error", f"Не вдалось відкрити XLSX: {e}")
+        return
+
+    total_chars = sum(len(t) for t in originals)
+    total_segs = len(originals)
+    yield ("log", f"XLSX: {total_segs} рядків, {total_chars} символів")
+
+    if total_segs == 0:
+        yield ("error", "У файлі не знайдено тексту для перекладу")
+        return
+
+    max_chars = CFG.get("max_chars", 30000)
+    if total_chars > max_chars:
+        yield ("error",
+               f"Файл занадто великий: {total_chars} символів "
+               f"(максимум {max_chars})")
+        return
+
+    yield ("meta", {"chars": total_chars, "pages": None})
+
+    target_lang = lang_to if lang_to else "Ukrainian"
+    chunk_size  = CFG.get("chunk_size",  3000)
+    insert_mode = CFG.get("insert_mode", "replace")
+    separator   = CFG.get("separator",   "\n")
+    n_batches   = max(1, -(-total_chars // chunk_size))
+    yield ("log", f"XLSX: ~{n_batches} запитів до моделі (режим: {insert_mode})")
+
+    token_stats = {"tok_in": 0, "tok_out": 0}
+
+    def translate_batch_with_progress(batch, lang, stop_ev):
+        return _translate_json_segments(batch, lang, stop_ev, token_stats=token_stats)
+
+    try:
+        translated_bytes = translate_xlsx(
+            content,
+            target_lang,
+            translate_batch_with_progress,
+            stop_event,
+            chunk_size=chunk_size,
+            insert_mode=insert_mode,
+            separator=separator,
+        )
+    except Exception as e:
+        if stop_event.is_set():
+            yield ("stopped",)
+        else:
+            yield ("error", f"Помилка перекладу XLSX: {e}")
+        return
+
+    if stop_event.is_set():
+        yield ("stopped",)
+        return
+
+    yield ("progress", "Завершено", 100)
+    yield ("stats", token_stats["tok_in"], token_stats["tok_out"])
+    yield ("done",
+           f"{base_name}_translated.xlsx",
+           "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+           translated_bytes)
+
+
 USER_HTML = r"""<!DOCTYPE html>
 <html lang="uk">
 <head>
@@ -1303,7 +1465,7 @@ USER_HTML = r"""<!DOCTYPE html>
       <p>Автономний переклад текстів та документів</p>
     </div>
     <div style="display:flex;align-items:center;gap:10px;">
-      <button class="btn-help" onclick="document.getElementById('help-modal').classList.add('open')" title="Довідка">?</button>
+      <button class="btn-help" onclick="openHelp()" title="Довідка">?</button>
       <span class="online-badge" id="online-badge" title="Користувачів онлайн">
         <span class="online-dot"></span>
         <span id="online-count">—</span>
@@ -1330,7 +1492,7 @@ USER_HTML = r"""<!DOCTYPE html>
       <div class="help-section">
         <h3>Переклад файлів</h3>
         <ul>
-          <li>Підтримуються формати: <strong>DOCX, PDF, TXT</strong>.</li>
+          <li>Підтримуються формати: <strong>DOCX, PDF, PPTX, XLSX, TXT</strong>.</li>
           <li>Перетягніть файл на зону завантаження або натисніть щоб обрати.</li>
           <li>Після завершення з'явиться кнопка <strong>Завантажити</strong>.</li>
           <li>Для DOCX також доступна кнопка <strong>Переглянути</strong> — перегляд у браузері та збереження як PDF.</li>
@@ -1346,8 +1508,8 @@ USER_HTML = r"""<!DOCTYPE html>
       <div class="help-section">
         <h3>Обмеження</h3>
         <ul>
-          <li>PDF — максимум <strong>10 сторінок</strong> за один запит.</li>
-          <li>Текст — максимум <strong>30 000 символів</strong>.</li>
+          <li>PDF — максимум <strong><span id="help-limit-pages">10</span> сторінок</strong> за один запит.</li>
+          <li>Текст / файли — максимум <strong><span id="help-limit-chars">30 000</span> символів</strong>.</li>
         </ul>
       </div>
       <div class="help-section">
@@ -1400,6 +1562,7 @@ USER_HTML = r"""<!DOCTYPE html>
           <div class="panel-label">Оригінал</div>
           <div id="input" class="rich-editor" contenteditable="true" spellcheck="false"
                data-gramm="false" data-placeholder="Введіть текст для перекладу..."></div>
+          <div id="char-counter" style="font-size:0.78rem;color:var(--muted);text-align:right;margin-top:4px;min-height:1.2em;line-height:1.2;"></div>
           <div class="actions">
             <button id="btn-translate" class="primary" onclick="doTranslate()">Перекласти</button>
             <button id="btn-stop" class="stop" onclick="doStop()">Зупинити</button>
@@ -1420,7 +1583,7 @@ USER_HTML = r"""<!DOCTYPE html>
     <div id="panel-file" class="panel">
       <!-- Drop zone -->
       <div class="drop-zone" id="drop-zone" onclick="dzClick()">
-        <input type="file" id="file-input" accept=".pdf,.docx,.txt" onchange="fileSelected(this.files[0])">
+        <input type="file" id="file-input" accept=".pdf,.docx,.pptx,.xlsx,.txt" onchange="fileSelected(this.files[0])">
         <div class="drop-zone-empty">
           <div class="drop-zone-icon">📄</div>
           <div class="drop-zone-text">Натисніть або перетягніть файл</div>
@@ -1475,7 +1638,7 @@ USER_HTML = r"""<!DOCTYPE html>
   <div class="footer">
     <a href="/admin">Адміністрування</a>
     <span style="margin: 0 12px; color: var(--border);">|</span>
-    <span>v1.15</span>
+    <span>v1.21</span>
   </div>
 </div>
 
@@ -1897,8 +2060,54 @@ sendHeartbeat();
 setInterval(sendHeartbeat, 15000);
 window.addEventListener('pagehide', sendLeave);
 
+// ── Config cache & help modal ──────────────────────────────────────────
+let _cfg = null;
+
+async function loadAppConfig() {
+  try {
+    const r = await fetch('/config');
+    _cfg = await r.json();
+    updateCharCounter();
+  } catch(e) {}
+}
+
+function openHelp() {
+  if (_cfg) {
+    const pages = _cfg.max_pdf_pages ?? 10;
+    const chars = (_cfg.max_chars ?? 30000).toLocaleString('uk-UA');
+    document.getElementById('help-limit-pages').textContent = pages;
+    document.getElementById('help-limit-chars').textContent = chars;
+  }
+  document.getElementById('help-modal').classList.add('open');
+}
+
+// ── Character counter ──────────────────────────────────────────────────
+function updateCharCounter() {
+  const el = document.getElementById('char-counter');
+  const inputEl = document.getElementById('input');
+  if (!el || !inputEl) return;
+  const len = inputEl.textContent.length;
+  if (len === 0) { el.textContent = ''; return; }
+  const max = _cfg ? (_cfg.max_chars ?? 30000) : 30000;
+  const pct = len / max;
+  if (pct >= 1) {
+    el.style.color = '#dc2626';
+    el.style.fontWeight = '600';
+  } else if (pct >= 0.85) {
+    el.style.color = '#d97706';
+    el.style.fontWeight = '600';
+  } else {
+    el.style.color = 'var(--muted)';
+    el.style.fontWeight = 'normal';
+  }
+  el.textContent = len.toLocaleString('uk-UA') + ' / ' + max.toLocaleString('uk-UA') + ' симв.';
+}
+
+document.getElementById('input').addEventListener('input', updateCharCounter);
+
 initLangs();
 loadModels();
+loadAppConfig();
 document.getElementById('input').addEventListener('keydown', e => {
   if (e.ctrlKey && e.key === 'Enter') doTranslate();
 });
@@ -2553,6 +2762,10 @@ async def translate_file_endpoint(
                 it = translate_docx_bytes(content, base, lang_from, lang_to, stop_event)
             elif ext == "pdf":
                 it = translate_pdf_bytes(content, base, lang_from, lang_to, stop_event)
+            elif ext == "pptx":
+                it = translate_pptx_bytes(content, base, lang_from, lang_to, stop_event)
+            elif ext == "xlsx":
+                it = translate_xlsx_bytes(content, base, lang_from, lang_to, stop_event)
             else:
                 it = translate_txt_bytes(content, base, lang_from, lang_to, stop_event)
 
