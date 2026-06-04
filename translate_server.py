@@ -32,7 +32,7 @@ for _mod, _pkg in _REQUIRED.items():
         _missing.append(_pkg)
 if _missing:
     raise SystemExit(
-        f"\n[Interpres-API] Відсутні залежності: {', '.join(_missing)}\n"
+        f"\n[Interpres-Atom] Відсутні залежності: {', '.join(_missing)}\n"
         f"Встановіть: pip install {' '.join(_missing)}\n"
     )
 
@@ -966,7 +966,7 @@ USER_HTML = r"""<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Interpres-API</title>
+<title>Interpres-Atom</title>
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -1299,7 +1299,7 @@ USER_HTML = r"""<!DOCTYPE html>
 <div class="container">
   <header>
     <div>
-      <h1>Interpres-API</h1>
+      <h1>Interpres-Atom</h1>
       <p>Автономний переклад текстів та документів</p>
     </div>
     <div style="display:flex;align-items:center;gap:10px;">
@@ -1314,7 +1314,7 @@ USER_HTML = r"""<!DOCTYPE html>
   <div id="help-modal" class="help-modal" onclick="if(event.target===this)this.classList.remove('open')">
     <div class="help-box">
       <button class="close-help" onclick="document.getElementById('help-modal').classList.remove('open')">&#x2715;</button>
-      <h2>Як користуватись Interpres-API</h2>
+      <h2>Як користуватись Interpres-Atom</h2>
       <div style="background:#fef3c7;border:1px solid #f59e0b;border-radius:8px;padding:10px 14px;margin-bottom:18px;font-size:0.88rem;color:#92400e;">
         &#9888;&#65039; <strong>Бета-версія.</strong> Система перебуває в тестуванні та може містити помилки. Будь ласка, перевіряйте результати перекладу перед використанням.
       </div>
@@ -1911,7 +1911,7 @@ ADMIN_HTML = r"""<!DOCTYPE html>
 <html lang="uk">
 <head>
 <meta charset="UTF-8">
-<title>Interpres-API — Адмін</title>
+<title>Interpres-Atom — Адмін</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: sans-serif; background: #f5f5f5; padding: 24px; max-width: 1200px; margin: 0 auto; }
@@ -1932,15 +1932,22 @@ ADMIN_HTML = r"""<!DOCTYPE html>
   details { margin-top: 0; }
   summary { font-size: 1rem; font-weight: 600; color: #333; cursor: pointer; user-select: none; }
   summary:hover { color: #2563eb; }
-  .settings-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 16px; }
+  .settings-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px; }
   .settings-grid .full { grid-column: 1 / -1; }
   .back-link { display: inline-block; margin-bottom: 16px; font-size: .9rem; color: #2563eb; text-decoration: none; }
   .back-link:hover { text-decoration: underline; }
+  .settings-section { border: 1px solid #e5e7eb; border-radius: 8px; margin-top: 16px; overflow: hidden; }
+  .settings-section-header { background: #f9fafb; padding: 10px 14px; font-size: .85rem; font-weight: 600; color: #374151; text-transform: uppercase; letter-spacing: .04em; border-bottom: 1px solid #e5e7eb; }
+  .settings-section-body { padding: 14px; }
+  .format-tabs { display: flex; gap: 4px; margin-bottom: 14px; }
+  .format-tab { background: #f3f4f6; border: 1px solid #e5e7eb; border-radius: 6px; padding: 6px 18px; font-size: .875rem; color: #374151; cursor: pointer; transition: all .15s; }
+  .format-tab:hover { background: #e5e7eb; }
+  .format-tab.active { background: #2563eb; color: white; border-color: #2563eb; }
 </style>
 </head>
 <body>
 <a class="back-link" href="/">&#8592; На головну</a>
-<h1>Interpres-API — Адміністрування</h1>
+<h1>Interpres-Atom — Адміністрування</h1>
 
 <!-- Stats -->
 <div class="card">
@@ -1979,60 +1986,98 @@ ADMIN_HTML = r"""<!DOCTYPE html>
 <div class="card">
   <details id="settings-details">
     <summary>&#9881; Налаштування</summary>
-    <div class="settings-grid">
-      <div class="full">
-        <label>Ollama URL</label>
-        <input type="text" id="cfg_base_url" placeholder="http://127.0.0.1:11434/v1">
-      </div>
-      <div class="full">
-        <label>Модель</label>
-        <input type="text" id="cfg_model" placeholder="назва моделі">
-      </div>
-      <div>
-        <label>Макс. токенів</label>
-        <input type="number" id="cfg_max_tokens" min="128" max="32000" step="128">
-      </div>
-      <div>
-        <label>Таймаут LLM (секунди)</label>
-        <input type="number" id="cfg_llm_timeout" min="10" max="600">
-      </div>
-      <div>
-        <label>Розмір чанка (символів)</label>
-        <input type="number" id="cfg_chunk_size" min="500" max="20000" step="100">
-      </div>
-      <div>
-        <label>Макс. сторінок PDF</label>
-        <input type="number" id="cfg_max_pdf_pages" min="1" max="500" step="1">
-      </div>
-      <div class="full">
-        <label>Макс. символів (текст/DOCX/TXT)</label>
-        <input type="number" id="cfg_max_chars" min="1000" max="1000000" step="1000">
-      </div>
-      <div>
-        <label>Temperature (0 — точно, 2 — творчо)</label>
-        <input type="number" id="cfg_temperature" min="0" max="2" step="0.05">
-      </div>
-      <div>
-        <label>Повторів при помилці (retry)</label>
-        <input type="number" id="cfg_retry" min="1" max="6" step="1">
-      </div>
-      <div>
-        <label>Режим вставки перекладу</label>
-        <select id="cfg_insert_mode" onchange="toggleSeparator()">
-          <option value="replace">replace — замінити оригінал</option>
-          <option value="append">append — після оригіналу</option>
-          <option value="prepend">prepend — перед оригіналом</option>
-        </select>
-      </div>
-      <div id="cfg_separator_row">
-        <label>Роздільник (append/prepend)</label>
-        <input type="text" id="cfg_separator" placeholder="&#10;(новий рядок)">
-      </div>
-      <div class="full">
-        <label>Кастомна інструкція перекладу (custom_prompt, необов'язково)</label>
-        <textarea id="cfg_custom_prompt" placeholder="Наприклад: Зберігай технічні терміни без перекладу."></textarea>
+
+    <!-- 1. Підключення -->
+    <div class="settings-section">
+      <div class="settings-section-header">&#128268; Підключення до моделі</div>
+      <div class="settings-section-body">
+        <div class="settings-grid">
+          <div class="full">
+            <label>Ollama URL</label>
+            <input type="text" id="cfg_base_url" placeholder="http://127.0.0.1:11434/v1">
+          </div>
+          <div class="full">
+            <label>Модель</label>
+            <input type="text" id="cfg_model" placeholder="назва моделі">
+          </div>
+          <div>
+            <label>Макс. токенів</label>
+            <input type="number" id="cfg_max_tokens" min="128" max="32000" step="128">
+          </div>
+          <div>
+            <label>Таймаут LLM (секунди)</label>
+            <input type="number" id="cfg_llm_timeout" min="10" max="600">
+          </div>
+        </div>
       </div>
     </div>
+
+    <!-- 2. Якість перекладу -->
+    <div class="settings-section">
+      <div class="settings-section-header">&#127919; Якість перекладу</div>
+      <div class="settings-section-body">
+        <div class="settings-grid">
+          <div>
+            <label>Temperature (0 — точно, 2 — творчо)</label>
+            <input type="number" id="cfg_temperature" min="0" max="2" step="0.05">
+          </div>
+          <div>
+            <label>Повторів при помилці (retry)</label>
+            <input type="number" id="cfg_retry" min="1" max="6" step="1">
+          </div>
+          <div class="full">
+            <label>Кастомна інструкція перекладу (необов'язково)</label>
+            <textarea id="cfg_custom_prompt" placeholder="Наприклад: Зберігай технічні терміни без перекладу."></textarea>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 3. Налаштування формату -->
+    <div class="settings-section">
+      <div class="settings-section-header">&#128196; Налаштування формату</div>
+      <div class="settings-section-body">
+        <div class="format-tabs">
+          <button class="format-tab active" onclick="switchFormatTab('docx', this)">DOCX</button>
+          <button class="format-tab" onclick="switchFormatTab('pdf', this)">PDF</button>
+          <button class="format-tab" onclick="switchFormatTab('txt', this)">TXT</button>
+        </div>
+        <!-- DOCX -->
+        <div id="format-tab-docx" class="settings-grid">
+          <div>
+            <label>Режим вставки перекладу</label>
+            <select id="cfg_insert_mode" onchange="toggleSeparator()">
+              <option value="replace">replace — замінити оригінал</option>
+              <option value="append">append — після оригіналу</option>
+              <option value="prepend">prepend — перед оригіналом</option>
+            </select>
+          </div>
+          <div id="cfg_separator_row">
+            <label>Роздільник (append/prepend)</label>
+            <input type="text" id="cfg_separator" placeholder="(новий рядок)">
+          </div>
+          <div class="full">
+            <label>Розмір чанка (символів на запит до моделі)</label>
+            <input type="number" id="cfg_chunk_size" min="500" max="20000" step="100">
+          </div>
+        </div>
+        <!-- PDF -->
+        <div id="format-tab-pdf" class="settings-grid" style="display:none">
+          <div>
+            <label>Макс. сторінок PDF</label>
+            <input type="number" id="cfg_max_pdf_pages" min="1" max="500" step="1">
+          </div>
+        </div>
+        <!-- TXT -->
+        <div id="format-tab-txt" class="settings-grid" style="display:none">
+          <div class="full">
+            <label>Макс. символів (текст / TXT)</label>
+            <input type="number" id="cfg_max_chars" min="1000" max="1000000" step="1000">
+          </div>
+        </div>
+      </div>
+    </div>
+
     <div class="btn-row" style="margin-top:16px;">
       <button class="btn-save" onclick="saveSettings()">Зберегти</button>
       <button onclick="resetSettings()" style="background:#6b7280;">Скинути до стандартних</button>
@@ -2045,6 +2090,14 @@ ADMIN_HTML = r"""<!DOCTYPE html>
 function toggleSeparator() {
   const mode = document.getElementById('cfg_insert_mode').value;
   document.getElementById('cfg_separator_row').style.display = (mode === 'replace') ? 'none' : '';
+}
+
+function switchFormatTab(tab, btn) {
+  ['docx','pdf','txt'].forEach(t => {
+    document.getElementById('format-tab-' + t).style.display = (t === tab) ? '' : 'none';
+  });
+  document.querySelectorAll('.format-tab').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
 }
 
 function applyCfg(cfg) {
