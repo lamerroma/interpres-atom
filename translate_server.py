@@ -211,6 +211,9 @@ def log_stat(**kwargs):
                 f"VALUES ({','.join(['?'] * len(fields))})",
                 values,
             )
+            conn.execute("DELETE FROM stats WHERE timestamp < ?", (
+                (datetime.datetime.now() - datetime.timedelta(days=100)).isoformat(timespec="seconds"),
+            ))
             conn.commit()
     except Exception as e:
         log.error(f"log_stat failed: {e}")
@@ -246,7 +249,15 @@ def clear_stats():
         conn.commit()
 
 
+def _purge_old_stats(days: int = 100):
+    cutoff = (datetime.datetime.now() - datetime.timedelta(days=days)).isoformat(timespec="seconds")
+    with _stats_lock, _stats_conn() as conn:
+        conn.execute("DELETE FROM stats WHERE timestamp < ?", (cutoff,))
+        conn.commit()
+
+
 init_stats_db()
+_purge_old_stats()
 
 # ─────────────────────────────────────────────────────────────────────────────
 
