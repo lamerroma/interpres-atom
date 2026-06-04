@@ -2065,7 +2065,7 @@ let _cfg = null;
 
 async function loadAppConfig() {
   try {
-    const r = await fetch('/config');
+    const r = await fetch('/limits');
     _cfg = await r.json();
     updateCharCounter();
   } catch(e) {}
@@ -2485,6 +2485,14 @@ def get_models():
         return JSONResponse({"ok": False, "models": [], "current": CFG.get("model", ""), "error": f"HTTP {resp.status_code}"})
     except Exception as e:
         return JSONResponse({"ok": False, "models": [], "current": CFG.get("model", ""), "error": str(e)})
+
+
+@app.get("/limits")
+def get_limits():
+    return JSONResponse({
+        "max_chars":     CFG.get("max_chars",     30000),
+        "max_pdf_pages": CFG.get("max_pdf_pages", 10),
+    })
 
 
 @app.get("/config")
