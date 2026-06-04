@@ -109,7 +109,7 @@ LANG_NAMES_UK = {
     "Polish":     "Польська",
     "Portuguese": "Португальська",
     "Romanian":   "Румунська",
-    "Russian":    "Російська",
+    "Russian":    "російська",
     "Slovak":     "Словацька",
     "Spanish":    "Іспанська",
     "Swedish":    "Шведська",
@@ -2470,7 +2470,7 @@ def admin_stats_clear():
 
 @app.get("/languages")
 def get_languages():
-    langs = sorted(LANG_MAP.keys(), key=lambda k: LANG_NAMES_UK[k])
+    langs = sorted(LANG_MAP.keys(), key=lambda k: LANG_NAMES_UK[k].lower())
     return JSONResponse([{"label": LANG_NAMES_UK[k], "value": k} for k in langs])
 
 
