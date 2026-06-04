@@ -1948,20 +1948,20 @@ ADMIN_HTML = r"""<!DOCTYPE html>
     <summary>&#128202; Статистика</summary>
     <div style="margin-top:16px;">
       <div id="stats-summary" style="display:grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap:10px; margin-bottom:14px;"></div>
-      <div style="overflow-x:auto;">
+      <div style="overflow:auto; max-height:420px; border:1px solid #e2e8f0; border-radius:6px;">
         <table style="width:100%; border-collapse:collapse; font-size:.82rem;">
           <thead>
             <tr style="background:#f1f5f9; text-align:left;">
-              <th style="padding:6px 8px; border-bottom:1px solid #e2e8f0;">Час</th>
-              <th style="padding:6px 8px; border-bottom:1px solid #e2e8f0;">IP</th>
-              <th style="padding:6px 8px; border-bottom:1px solid #e2e8f0;">Тип</th>
-              <th style="padding:6px 8px; border-bottom:1px solid #e2e8f0;">Файл</th>
-              <th style="padding:6px 8px; border-bottom:1px solid #e2e8f0;">Мови</th>
-              <th style="padding:6px 8px; border-bottom:1px solid #e2e8f0;">Симв.</th>
-              <th style="padding:6px 8px; border-bottom:1px solid #e2e8f0;">Стор.</th>
-              <th style="padding:6px 8px; border-bottom:1px solid #e2e8f0;">Час, с</th>
-              <th style="padding:6px 8px; border-bottom:1px solid #e2e8f0;">Статус</th>
-              <th style="padding:6px 8px; border-bottom:1px solid #e2e8f0;">Помилка</th>
+              <th style="padding:6px 8px; border-bottom:1px solid #e2e8f0; position:sticky; top:0; background:#f1f5f9; z-index:1;">Час</th>
+              <th style="padding:6px 8px; border-bottom:1px solid #e2e8f0; position:sticky; top:0; background:#f1f5f9; z-index:1;">IP</th>
+              <th style="padding:6px 8px; border-bottom:1px solid #e2e8f0; position:sticky; top:0; background:#f1f5f9; z-index:1;">Тип</th>
+              <th style="padding:6px 8px; border-bottom:1px solid #e2e8f0; position:sticky; top:0; background:#f1f5f9; z-index:1;">Файл</th>
+              <th style="padding:6px 8px; border-bottom:1px solid #e2e8f0; position:sticky; top:0; background:#f1f5f9; z-index:1;">Мови</th>
+              <th style="padding:6px 8px; border-bottom:1px solid #e2e8f0; position:sticky; top:0; background:#f1f5f9; z-index:1;">Симв.</th>
+              <th style="padding:6px 8px; border-bottom:1px solid #e2e8f0; position:sticky; top:0; background:#f1f5f9; z-index:1;">Стор.</th>
+              <th style="padding:6px 8px; border-bottom:1px solid #e2e8f0; position:sticky; top:0; background:#f1f5f9; z-index:1;">Час, с</th>
+              <th style="padding:6px 8px; border-bottom:1px solid #e2e8f0; position:sticky; top:0; background:#f1f5f9; z-index:1;">Статус</th>
+              <th style="padding:6px 8px; border-bottom:1px solid #e2e8f0; position:sticky; top:0; background:#f1f5f9; z-index:1;">Помилка</th>
             </tr>
           </thead>
           <tbody id="stats-tbody"></tbody>
