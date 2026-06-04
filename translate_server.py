@@ -175,6 +175,9 @@ def _stats_conn():
     return conn
 
 
+_STATS_KEEP = 200  # max detailed records to keep
+
+
 def init_stats_db():
     with _stats_conn() as conn:
         conn.execute("""
@@ -194,7 +197,58 @@ def init_stats_db():
                 error TEXT
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS stats_totals (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                total INTEGER DEFAULT 0,
+                success INTEGER DEFAULT 0,
+                errors INTEGER DEFAULT 0,
+                stopped INTEGER DEFAULT 0,
+                total_chars INTEGER DEFAULT 0,
+                total_seconds REAL DEFAULT 0,
+                total_pages INTEGER DEFAULT 0
+            )
+        """)
+        conn.execute("INSERT OR IGNORE INTO stats_totals (id) VALUES (1)")
         conn.commit()
+
+
+def _rotate_stats(conn):
+    """Move oldest records beyond _STATS_KEEP into totals, then delete them."""
+    count = conn.execute("SELECT COUNT(*) FROM stats").fetchone()[0]
+    overflow = count - _STATS_KEEP
+    if overflow <= 0:
+        return
+    rows = conn.execute("""
+        SELECT status, chars, duration, pages FROM stats
+        ORDER BY id ASC LIMIT ?
+    """, (overflow,)).fetchall()
+    totals = {"total": 0, "success": 0, "errors": 0, "stopped": 0,
+              "total_chars": 0, "total_seconds": 0.0, "total_pages": 0}
+    for r in rows:
+        totals["total"] += 1
+        if r["status"] == "success":  totals["success"] += 1
+        elif r["status"] == "error":  totals["errors"] += 1
+        elif r["status"] == "stopped": totals["stopped"] += 1
+        totals["total_chars"]   += r["chars"] or 0
+        totals["total_seconds"] += r["duration"] or 0.0
+        totals["total_pages"]   += r["pages"] or 0
+    conn.execute("""
+        UPDATE stats_totals SET
+            total         = total         + :total,
+            success       = success       + :success,
+            errors        = errors        + :errors,
+            stopped       = stopped       + :stopped,
+            total_chars   = total_chars   + :total_chars,
+            total_seconds = total_seconds + :total_seconds,
+            total_pages   = total_pages   + :total_pages
+        WHERE id = 1
+    """, totals)
+    conn.execute("""
+        DELETE FROM stats WHERE id IN (
+            SELECT id FROM stats ORDER BY id ASC LIMIT ?
+        )
+    """, (overflow,))
 
 
 def log_stat(**kwargs):
@@ -211,9 +265,7 @@ def log_stat(**kwargs):
                 f"VALUES ({','.join(['?'] * len(fields))})",
                 values,
             )
-            conn.execute("DELETE FROM stats WHERE timestamp < ?", (
-                (datetime.datetime.now() - datetime.timedelta(days=100)).isoformat(timespec="seconds"),
-            ))
+            _rotate_stats(conn)
             conn.commit()
     except Exception as e:
         log.error(f"log_stat failed: {e}")
@@ -229,7 +281,7 @@ def get_recent_stats(limit=100):
 
 def get_stats_summary():
     with _stats_conn() as conn:
-        row = conn.execute("""
+        cur = conn.execute("""
             SELECT
               COUNT(*) AS total,
               SUM(CASE WHEN status='success' THEN 1 ELSE 0 END) AS success,
@@ -240,24 +292,32 @@ def get_stats_summary():
               SUM(pages) AS total_pages
             FROM stats
         """).fetchone()
-    return dict(row) if row else {}
+        tot = conn.execute("SELECT * FROM stats_totals WHERE id=1").fetchone()
+    result = {
+        "total":         (cur["total"] or 0)         + (tot["total"] or 0),
+        "success":       (cur["success"] or 0)       + (tot["success"] or 0),
+        "errors":        (cur["errors"] or 0)        + (tot["errors"] or 0),
+        "stopped":       (cur["stopped"] or 0)       + (tot["stopped"] or 0),
+        "total_chars":   (cur["total_chars"] or 0)   + (tot["total_chars"] or 0),
+        "total_seconds": (cur["total_seconds"] or 0) + (tot["total_seconds"] or 0),
+        "total_pages":   (cur["total_pages"] or 0)   + (tot["total_pages"] or 0),
+    }
+    return result
 
 
 def clear_stats():
     with _stats_lock, _stats_conn() as conn:
         conn.execute("DELETE FROM stats")
-        conn.commit()
-
-
-def _purge_old_stats(days: int = 100):
-    cutoff = (datetime.datetime.now() - datetime.timedelta(days=days)).isoformat(timespec="seconds")
-    with _stats_lock, _stats_conn() as conn:
-        conn.execute("DELETE FROM stats WHERE timestamp < ?", (cutoff,))
+        conn.execute("""
+            UPDATE stats_totals SET
+                total=0, success=0, errors=0, stopped=0,
+                total_chars=0, total_seconds=0, total_pages=0
+            WHERE id=1
+        """)
         conn.commit()
 
 
 init_stats_db()
-_purge_old_stats()
 
 # ─────────────────────────────────────────────────────────────────────────────
 
