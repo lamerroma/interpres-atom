@@ -2475,61 +2475,153 @@ ADMIN_HTML = r"""<!DOCTYPE html>
 <title>Interpres-Atom — Адмін</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: sans-serif; background: #f5f5f5; padding: 24px; max-width: 1200px; margin: 0 auto; }
-  h1 { margin-bottom: 20px; font-size: 1.4rem; color: #333; }
-  .card { background: white; border-radius: 8px; padding: 20px; box-shadow: 0 1px 4px rgba(0,0,0,.1); margin-bottom: 16px; }
-  label { display: block; font-size: .85rem; color: #555; margin-bottom: 4px; }
-  input[type=text], input[type=number], select, textarea { width: 100%; border: 1px solid #ddd; border-radius: 6px; padding: 8px 10px; font-size: .95rem; font-family: inherit; }
-  textarea { resize: vertical; min-height: 60px; }
+  :root {
+    --bg: #f6f7f9;
+    --panel: #ffffff;
+    --panel-soft: #f9fafb;
+    --line: #dde3ea;
+    --line-soft: #eef2f6;
+    --text: #111827;
+    --muted: #64748b;
+    --primary: #2563eb;
+    --primary-dark: #1d4ed8;
+    --success: #16a34a;
+    --danger: #dc2626;
+    --warning: #d97706;
+  }
+  body { font-family: Inter, "Segoe UI", system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+  .admin-shell { max-width: 1280px; margin: 0 auto; padding: 24px; }
+  .topbar { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 18px; }
+  .brand h1 { font-size: 1.35rem; line-height: 1.2; margin-bottom: 4px; letter-spacing: 0; }
+  .brand p { color: var(--muted); font-size: .9rem; }
+  .top-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+  .back-link { display: inline-flex; align-items: center; gap: 6px; font-size: .9rem; color: var(--primary); text-decoration: none; background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 9px 12px; }
+  .back-link:hover { border-color: #bfdbfe; background: #eff6ff; text-decoration: none; }
+  .badge { display: inline-flex; align-items: center; gap: 7px; border: 1px solid var(--line); background: #fff; color: var(--muted); border-radius: 999px; padding: 8px 11px; font-size: .84rem; white-space: nowrap; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: #94a3b8; }
+  .dot.ok { background: var(--success); box-shadow: 0 0 0 3px rgba(22,163,74,.12); }
+  .dot.err { background: var(--danger); box-shadow: 0 0 0 3px rgba(220,38,38,.12); }
+  .overview-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 16px; }
+  .metric-card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px; min-height: 92px; }
+  .metric-label { color: var(--muted); font-size: .76rem; text-transform: uppercase; letter-spacing: .04em; margin-bottom: 8px; }
+  .metric-value { font-size: 1.35rem; font-weight: 700; line-height: 1.15; overflow-wrap: anywhere; }
+  .metric-note { color: var(--muted); font-size: .82rem; margin-top: 6px; overflow-wrap: anywhere; }
+  .layout-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 1px 2px rgba(15,23,42,.04); overflow: hidden; }
+  .card-body { padding: 18px; }
+  label { display: block; font-size: .82rem; color: #475569; margin-bottom: 6px; font-weight: 600; }
+  input[type=text], input[type=number], select, textarea { width: 100%; border: 1px solid #cfd8e3; border-radius: 7px; padding: 9px 11px; font-size: .94rem; font-family: inherit; background: white; color: var(--text); }
+  input:focus, select:focus, textarea:focus { outline: 2px solid rgba(37,99,235,.18); border-color: #60a5fa; }
+  textarea { resize: vertical; min-height: 72px; }
   select { background: white; cursor: pointer; }
   .btn-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-  button { background: #2563eb; color: white; border: none; border-radius: 6px; padding: 10px 24px; font-size: 1rem; cursor: pointer; transition: background .2s; }
-  button:hover { background: #1d4ed8; }
-  .btn-save { background: #16a34a; }
+  button { background: var(--primary); color: white; border: none; border-radius: 7px; padding: 9px 16px; font-size: .93rem; cursor: pointer; transition: background .2s, transform .1s; font-family: inherit; }
+  button:hover { background: var(--primary-dark); }
+  button:active { transform: translateY(1px); }
+  .btn-muted { background: #64748b; }
+  .btn-danger { background: var(--danger); }
+  .btn-save { background: var(--success); }
   .btn-save:hover { background: #15803d; }
-  .status { font-size: .8rem; color: #888; }
-  .status.ok { color: #16a34a; }
-  .status.err { color: #dc2626; }
+  .status { font-size: .82rem; color: var(--muted); }
+  .status.ok { color: var(--success); }
+  .status.err { color: var(--danger); }
   details { margin-top: 0; }
-  summary { font-size: 1rem; font-weight: 600; color: #333; cursor: pointer; user-select: none; }
-  summary:hover { color: #2563eb; }
-  .settings-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px; }
+  summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 1rem; font-weight: 700; color: var(--text); cursor: pointer; user-select: none; padding: 16px 18px; background: #fff; border-bottom: 1px solid var(--line-soft); }
+  summary:hover { color: var(--primary); background: #fbfdff; }
+  summary::marker { color: var(--muted); }
+  .summary-title { display: inline-flex; align-items: center; gap: 9px; }
+  .summary-pill { font-size: .78rem; color: var(--muted); font-weight: 600; background: var(--panel-soft); border: 1px solid var(--line); border-radius: 999px; padding: 5px 9px; }
+  .settings-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 12px; }
   .settings-grid .full { grid-column: 1 / -1; }
-  .back-link { display: inline-block; margin-bottom: 16px; font-size: .9rem; color: #2563eb; text-decoration: none; }
-  .back-link:hover { text-decoration: underline; }
-  .settings-section { border: 1px solid #e5e7eb; border-radius: 8px; margin-top: 16px; overflow: hidden; }
-  .settings-section-header { background: #f9fafb; padding: 10px 14px; font-size: .85rem; font-weight: 600; color: #374151; text-transform: uppercase; letter-spacing: .04em; border-bottom: 1px solid #e5e7eb; }
-  .settings-section-body { padding: 14px; }
-  .format-tabs { display: flex; gap: 4px; margin-bottom: 14px; }
-  .format-tab { background: #f3f4f6; border: 1px solid #e5e7eb; border-radius: 6px; padding: 6px 18px; font-size: .875rem; color: #374151; cursor: pointer; transition: all .15s; }
+  .settings-section { border: 1px solid var(--line); border-radius: 8px; margin-top: 16px; overflow: hidden; background: #fff; }
+  .settings-section-header { background: var(--panel-soft); padding: 11px 14px; font-size: .8rem; font-weight: 700; color: #334155; text-transform: uppercase; letter-spacing: .045em; border-bottom: 1px solid var(--line); }
+  .settings-section-body { padding: 15px; }
+  .format-tabs { display: flex; gap: 6px; margin-bottom: 14px; flex-wrap: wrap; }
+  .format-tab { background: #f8fafc; border: 1px solid var(--line); border-radius: 7px; padding: 7px 15px; font-size: .875rem; color: #334155; cursor: pointer; transition: all .15s; }
   .format-tab:hover { background: #e5e7eb; }
-  .format-tab.active { background: #2563eb; color: white; border-color: #2563eb; }
+  .format-tab.active { background: var(--primary); color: white; border-color: var(--primary); }
+  .table-wrap { overflow: auto; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+  table { width: 100%; border-collapse: collapse; font-size: .84rem; }
+  th { padding: 9px 10px; border-bottom: 1px solid var(--line); background: #f8fafc; color: #475569; font-size: .76rem; text-transform: uppercase; letter-spacing: .035em; text-align: left; position: sticky; top: 0; z-index: 1; }
+  td { padding: 8px 10px; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
+  tr:hover td { background: #fbfdff; }
+  .mono { font-family: "Cascadia Mono", Consolas, monospace; }
+  .empty-row { padding: 18px; text-align: center; color: #94a3b8; }
+  .stats-grid { display:grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap:10px; margin-bottom:14px; }
+  .mini-stat { background:#f8fafc; border:1px solid var(--line); border-radius:8px; padding:11px; min-width: 0; }
+  .mini-stat-label { font-size:.7rem; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .mini-stat-value { font-size:1.18rem; font-weight:700; color:#1e293b; margin-top:3px; overflow-wrap:anywhere; }
+  @media (max-width: 900px) {
+    .admin-shell { padding: 16px; }
+    .topbar { align-items: flex-start; flex-direction: column; }
+    .top-actions { justify-content: flex-start; }
+    .overview-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .settings-grid { grid-template-columns: 1fr; }
+    .stats-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  }
+  @media (max-width: 560px) {
+    .overview-grid { grid-template-columns: 1fr; }
+  }
 </style>
 </head>
 <body>
-<a class="back-link" href="/">&#8592; На головну</a>
-<h1>Interpres-Atom — Адміністрування</h1>
+<div class="admin-shell">
+<div class="topbar">
+  <div class="brand">
+    <h1>Interpres-Atom</h1>
+    <p>Адміністрування сервісу перекладу</p>
+  </div>
+  <div class="top-actions">
+    <span class="badge"><span class="dot" id="admin-service-dot"></span><span id="admin-service-text">Перевірка сервісу...</span></span>
+    <a class="back-link" href="/">&#8592; На головну</a>
+  </div>
+</div>
+
+<div class="overview-grid">
+  <div class="metric-card">
+    <div class="metric-label">Стан сервісу</div>
+    <div class="metric-value" id="overview-service">—</div>
+    <div class="metric-note" id="overview-service-note">Перевіряю Ollama</div>
+  </div>
+  <div class="metric-card">
+    <div class="metric-label">Модель</div>
+    <div class="metric-value" id="overview-model">—</div>
+    <div class="metric-note">видно тільки адміну</div>
+  </div>
+  <div class="metric-card">
+    <div class="metric-label">Онлайн</div>
+    <div class="metric-value" id="overview-online">—</div>
+    <div class="metric-note">активні сесії</div>
+  </div>
+  <div class="metric-card">
+    <div class="metric-label">Останні задачі</div>
+    <div class="metric-value" id="overview-jobs">—</div>
+    <div class="metric-note" id="overview-jobs-note">за журналом</div>
+  </div>
+</div>
+
+<div class="layout-grid">
 
 <!-- Online users -->
 <div class="card">
   <details id="online-details" open>
-    <summary>&#128101; Онлайн-користувачі: <span id="admin-online-count">—</span></summary>
-    <div style="margin-top:16px;">
-      <div style="overflow:auto; border:1px solid #e2e8f0; border-radius:6px;">
-        <table style="width:100%; border-collapse:collapse; font-size:.86rem;">
+    <summary><span class="summary-title">&#128101; Онлайн-користувачі</span><span class="summary-pill" id="admin-online-count">—</span></summary>
+    <div class="card-body">
+      <div class="table-wrap">
+        <table>
           <thead>
-            <tr style="background:#f1f5f9; text-align:left;">
-              <th style="padding:7px 10px; border-bottom:1px solid #e2e8f0;">IP</th>
-              <th style="padding:7px 10px; border-bottom:1px solid #e2e8f0;">Остання активність</th>
-              <th style="padding:7px 10px; border-bottom:1px solid #e2e8f0;">Неактивний, с</th>
-              <th style="padding:7px 10px; border-bottom:1px solid #e2e8f0;">Сесія</th>
+            <tr>
+              <th>IP</th>
+              <th>Остання активність</th>
+              <th>Неактивний</th>
+              <th>Сесія</th>
             </tr>
           </thead>
           <tbody id="online-tbody"></tbody>
         </table>
       </div>
       <div class="btn-row" style="margin-top:10px;">
-        <button onclick="loadOnline()" style="background:#6b7280;">&#8635; Оновити</button>
+        <button onclick="loadOnline()" class="btn-muted">&#8635; Оновити</button>
       </div>
     </div>
   </details>
@@ -2538,31 +2630,31 @@ ADMIN_HTML = r"""<!DOCTYPE html>
 <!-- Stats -->
 <div class="card">
   <details id="stats-details">
-    <summary>&#128202; Статистика</summary>
-    <div style="margin-top:16px;">
-      <div id="stats-summary" style="display:grid; grid-template-columns: repeat(7, 1fr); gap:10px; margin-bottom:14px;"></div>
-      <div style="overflow:auto; max-height:420px; border:1px solid #e2e8f0; border-radius:6px;">
-        <table style="width:100%; border-collapse:collapse; font-size:.82rem;">
+    <summary><span class="summary-title">&#128202; Статистика</span><span class="summary-pill">журнал перекладів</span></summary>
+    <div class="card-body">
+      <div id="stats-summary" class="stats-grid"></div>
+      <div class="table-wrap" style="max-height:420px;">
+        <table>
           <thead>
-            <tr style="background:#f1f5f9; text-align:left;">
-              <th style="padding:6px 8px; border-bottom:1px solid #e2e8f0; position:sticky; top:0; background:#f1f5f9; z-index:1;">Час</th>
-              <th style="padding:6px 8px; border-bottom:1px solid #e2e8f0; position:sticky; top:0; background:#f1f5f9; z-index:1;">IP</th>
-              <th style="padding:6px 8px; border-bottom:1px solid #e2e8f0; position:sticky; top:0; background:#f1f5f9; z-index:1;">Тип</th>
-              <th style="padding:6px 8px; border-bottom:1px solid #e2e8f0; position:sticky; top:0; background:#f1f5f9; z-index:1;">Файл</th>
-              <th style="padding:6px 8px; border-bottom:1px solid #e2e8f0; position:sticky; top:0; background:#f1f5f9; z-index:1;">Мови</th>
-              <th style="padding:6px 8px; border-bottom:1px solid #e2e8f0; position:sticky; top:0; background:#f1f5f9; z-index:1;">Симв.</th>
-              <th style="padding:6px 8px; border-bottom:1px solid #e2e8f0; position:sticky; top:0; background:#f1f5f9; z-index:1;">Стор.</th>
-              <th style="padding:6px 8px; border-bottom:1px solid #e2e8f0; position:sticky; top:0; background:#f1f5f9; z-index:1;">Час, с</th>
-              <th style="padding:6px 8px; border-bottom:1px solid #e2e8f0; position:sticky; top:0; background:#f1f5f9; z-index:1;">Статус</th>
-              <th style="padding:6px 8px; border-bottom:1px solid #e2e8f0; position:sticky; top:0; background:#f1f5f9; z-index:1;">Помилка</th>
+            <tr>
+              <th>Час</th>
+              <th>IP</th>
+              <th>Тип</th>
+              <th>Файл</th>
+              <th>Мови</th>
+              <th>Симв.</th>
+              <th>Стор.</th>
+              <th>Час, с</th>
+              <th>Статус</th>
+              <th>Помилка</th>
             </tr>
           </thead>
           <tbody id="stats-tbody"></tbody>
         </table>
       </div>
       <div class="btn-row" style="margin-top:10px;">
-        <button onclick="loadStats()" style="background:#6b7280;">&#8635; Оновити</button>
-        <button onclick="clearStats()" style="background:#dc2626;">&#128465; Очистити статистику</button>
+        <button onclick="loadStats()" class="btn-muted">&#8635; Оновити</button>
+        <button onclick="clearStats()" class="btn-danger">&#128465; Очистити статистику</button>
       </div>
     </div>
   </details>
@@ -2571,7 +2663,8 @@ ADMIN_HTML = r"""<!DOCTYPE html>
 <!-- Settings -->
 <div class="card">
   <details id="settings-details">
-    <summary>&#9881; Налаштування</summary>
+    <summary><span class="summary-title">&#9881; Налаштування</span><span class="summary-pill">модель і ліміти</span></summary>
+    <div class="card-body">
 
     <!-- 1. Підключення -->
     <div class="settings-section">
@@ -2687,30 +2780,67 @@ ADMIN_HTML = r"""<!DOCTYPE html>
 
     <div class="btn-row" style="margin-top:16px;">
       <button class="btn-save" onclick="saveSettings()">Зберегти</button>
-      <button onclick="resetSettings()" style="background:#6b7280;">Скинути до стандартних</button>
+      <button onclick="resetSettings()" class="btn-muted">Скинути до стандартних</button>
       <span class="status" id="cfg-status"></span>
+    </div>
     </div>
   </details>
 </div>
+</div>
+</div>
 
 <script>
+function fmtInt(value) {
+  return Number(value || 0).toLocaleString('uk-UA');
+}
+
+async function loadAdminService() {
+  const dot = document.getElementById('admin-service-dot');
+  const text = document.getElementById('admin-service-text');
+  const overview = document.getElementById('overview-service');
+  const note = document.getElementById('overview-service-note');
+  try {
+    const r = await fetch('/models');
+    const d = await r.json();
+    document.getElementById('overview-model').textContent = d.current || '—';
+    if (d.ok) {
+      dot.className = 'dot ok';
+      text.textContent = 'Сервіс готовий';
+      overview.textContent = 'Готовий';
+      note.textContent = 'Ollama відповідає';
+    } else {
+      dot.className = 'dot err';
+      text.textContent = 'Сервіс не готовий';
+      overview.textContent = 'Не готовий';
+      note.textContent = d.error || 'Ollama не відповідає';
+    }
+  } catch (e) {
+    dot.className = 'dot err';
+    text.textContent = 'Сервіс не готовий';
+    overview.textContent = 'Не готовий';
+    note.textContent = String(e);
+  }
+}
+
 async function loadOnline() {
   try {
     const r = await fetch('/admin/online');
     const d = await r.json();
     document.getElementById('admin-online-count').textContent = d.online ?? 0;
+    document.getElementById('overview-online').textContent = d.online ?? 0;
     const rows = (d.sessions || []).map(s => `
       <tr>
-        <td style="padding:7px 10px; border-bottom:1px solid #f1f5f9; font-family:monospace;">${s.ip || '—'}</td>
-        <td style="padding:7px 10px; border-bottom:1px solid #f1f5f9;">${s.last_seen || '—'}</td>
-        <td style="padding:7px 10px; border-bottom:1px solid #f1f5f9;">${s.idle_seconds ?? '—'}</td>
-        <td style="padding:7px 10px; border-bottom:1px solid #f1f5f9; font-family:monospace;">${s.sid || '—'}</td>
+        <td class="mono">${s.ip || '—'}</td>
+        <td>${s.last_seen || '—'}</td>
+        <td>${s.idle_seconds ?? '—'} с</td>
+        <td class="mono">${s.sid || '—'}</td>
       </tr>
     `).join('');
-    document.getElementById('online-tbody').innerHTML = rows || '<tr><td colspan="4" style="padding:16px; text-align:center; color:#94a3b8;">Немає активних користувачів</td></tr>';
+    document.getElementById('online-tbody').innerHTML = rows || '<tr><td colspan="4" class="empty-row">Немає активних користувачів</td></tr>';
   } catch (e) {
     document.getElementById('admin-online-count').textContent = '—';
-    document.getElementById('online-tbody').innerHTML = `<tr><td colspan="4" style="padding:10px; color:#dc2626;">Помилка: ${e}</td></tr>`;
+    document.getElementById('overview-online').textContent = '—';
+    document.getElementById('online-tbody').innerHTML = `<tr><td colspan="4" style="color:#dc2626;">Помилка: ${e}</td></tr>`;
   }
 }
 
@@ -2756,7 +2886,9 @@ function applyTranslateGemmaProfile() {
 
 async function loadSettings() {
   const r = await fetch('/config');
-  applyCfg(await r.json());
+  const cfg = await r.json();
+  applyCfg(cfg);
+  document.getElementById('overview-model').textContent = cfg.model || '—';
 }
 
 async function saveSettings() {
@@ -2794,6 +2926,9 @@ async function loadStats() {
     const r = await fetch('/admin/stats?limit=100');
     const d = await r.json();
     const s = d.summary || {};
+    document.getElementById('overview-jobs').textContent = fmtInt(s.total ?? 0);
+    document.getElementById('overview-jobs-note').textContent =
+      `${fmtInt(s.success ?? 0)} успішно · ${fmtInt(s.errors ?? 0)} помилок`;
     const cards = [
       ['Всього', s.total ?? 0], ['Успішно', s.success ?? 0],
       ['Помилки', s.errors ?? 0], ['Зупинено', s.stopped ?? 0],
@@ -2801,29 +2936,29 @@ async function loadStats() {
       ['Секунд', Math.round(s.total_seconds ?? 0)],
     ];
     document.getElementById('stats-summary').innerHTML = cards.map(([k, v]) =>
-      `<div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; padding:10px;">
-         <div style="font-size:.7rem; color:#64748b; text-transform:uppercase;">${k}</div>
-         <div style="font-size:1.2rem; font-weight:600; color:#1e293b; margin-top:2px;">${v}</div>
+      `<div class="mini-stat">
+         <div class="mini-stat-label">${k}</div>
+         <div class="mini-stat-value">${fmtInt(v)}</div>
        </div>`).join('');
     const sc = { success:'#16a34a', error:'#dc2626', stopped:'#f59e0b' };
     const rows = (d.recent || []).map(r => {
       const t = (r.timestamp||'').replace('T',' ').slice(5,19);
       return `<tr>
-        <td style="padding:5px 8px; border-bottom:1px solid #f1f5f9;">${t}</td>
-        <td style="padding:5px 8px; border-bottom:1px solid #f1f5f9;">${r.ip||''}</td>
-        <td style="padding:5px 8px; border-bottom:1px solid #f1f5f9;">${r.kind||''}</td>
-        <td style="padding:5px 8px; border-bottom:1px solid #f1f5f9; max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${r.filename||''}</td>
-        <td style="padding:5px 8px; border-bottom:1px solid #f1f5f9;">${r.lang_from||''}→${r.lang_to||''}</td>
-        <td style="padding:5px 8px; border-bottom:1px solid #f1f5f9; text-align:right;">${r.chars??''}</td>
-        <td style="padding:5px 8px; border-bottom:1px solid #f1f5f9; text-align:right;">${r.pages??''}</td>
-        <td style="padding:5px 8px; border-bottom:1px solid #f1f5f9; text-align:right;">${r.duration??''}</td>
-        <td style="padding:5px 8px; border-bottom:1px solid #f1f5f9; color:${sc[r.status]||'#64748b'}; font-weight:500;">${r.status}</td>
-        <td style="padding:5px 8px; border-bottom:1px solid #f1f5f9; color:#dc2626; max-width:250px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${(r.error||'').replace(/"/g,'&quot;')}">${r.error||''}</td>
+        <td>${t}</td>
+        <td class="mono">${r.ip||''}</td>
+        <td>${r.kind||''}</td>
+        <td style="max-width:220px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${r.filename||''}</td>
+        <td>${r.lang_from||''}→${r.lang_to||''}</td>
+        <td style="text-align:right;">${r.chars ? fmtInt(r.chars) : ''}</td>
+        <td style="text-align:right;">${r.pages??''}</td>
+        <td style="text-align:right;">${r.duration??''}</td>
+        <td style="color:${sc[r.status]||'#64748b'}; font-weight:600;">${r.status}</td>
+        <td style="color:#dc2626; max-width:260px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${(r.error||'').replace(/"/g,'&quot;')}">${r.error||''}</td>
       </tr>`;
     }).join('');
-    document.getElementById('stats-tbody').innerHTML = rows || '<tr><td colspan="10" style="padding:20px; text-align:center; color:#94a3b8;">Немає даних</td></tr>';
+    document.getElementById('stats-tbody').innerHTML = rows || '<tr><td colspan="10" class="empty-row">Немає даних</td></tr>';
   } catch(e) {
-    document.getElementById('stats-tbody').innerHTML = `<tr><td colspan="10" style="padding:10px; color:#dc2626;">Помилка: ${e}</td></tr>`;
+    document.getElementById('stats-tbody').innerHTML = `<tr><td colspan="10" style="color:#dc2626;">Помилка: ${e}</td></tr>`;
   }
 }
 
@@ -2855,7 +2990,10 @@ function sendAdminLeave() {
 }
 
 loadSettings();
+loadAdminService();
+loadStats();
 sendAdminHeartbeat();
+setInterval(loadAdminService, 30000);
 setInterval(sendAdminHeartbeat, 15000);
 window.addEventListener('pagehide', sendAdminLeave);
 </script>
