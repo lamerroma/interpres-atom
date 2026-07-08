@@ -69,7 +69,7 @@ DEFAULTS = {
     "max_tokens":      2048,
     "llm_timeout":     180,
     "chunk_size":      3000,
-    "temperature":     0.7,
+    "temperature":     0.2,
     "retry":           2,
     "insert_mode":     "replace",
     "separator":       "\n",
@@ -510,6 +510,7 @@ def _translate_unit(text: str, lang_from: str, lang_to: str,
     # the model card's "To <Lang>:" anchor turned out to give worse term
     # choices than a plain "Translate to <Lang>" prompt.
     content = f"Translate to {target}:\n\n{text}"
+    temperature = float(CFG.get("temperature", 0.2))
     try:
         resp = req_lib.post(
             f"{_ollama_native_host()}/api/chat",
@@ -517,6 +518,7 @@ def _translate_unit(text: str, lang_from: str, lang_to: str,
                 "model": CFG["model"],
                 "messages": [{"role": "user", "content": content}],
                 "stream": False,
+                "options": {"temperature": temperature},
             },
             timeout=CFG["llm_timeout"],
         )
@@ -598,6 +600,7 @@ def _translate_unit_streaming(text: str, lang_from: str, lang_to: str,
 
     target = lang_to if lang_to else "Ukrainian"
     content = f"Translate to {target}:\n\n{text}"
+    temperature = float(CFG.get("temperature", 0.2))
 
     try:
         resp = req_lib.post(
@@ -606,6 +609,7 @@ def _translate_unit_streaming(text: str, lang_from: str, lang_to: str,
                 "model": CFG["model"],
                 "messages": [{"role": "user", "content": content}],
                 "stream": True,
+                "options": {"temperature": temperature},
             },
             timeout=CFG["llm_timeout"],
             stream=True,
@@ -668,7 +672,7 @@ def _translate_json_segments(batch: dict, lang_to: str,
     prompt = f"{instruction}\n\n{json_input}"
 
     max_retries = max(1, int(CFG.get("retry", 2)))
-    temperature = float(CFG.get("temperature", 0.7))
+    temperature = float(CFG.get("temperature", 0.2))
 
     for attempt in range(max_retries):
         if stop_event.is_set():
@@ -2460,7 +2464,7 @@ function applyCfg(cfg) {
   document.getElementById('cfg_chunk_size').value    = cfg.chunk_size    ?? 3000;
   document.getElementById('cfg_max_pdf_pages').value = cfg.max_pdf_pages ?? 10;
   document.getElementById('cfg_max_chars').value     = cfg.max_chars     ?? 30000;
-  document.getElementById('cfg_temperature').value   = cfg.temperature   ?? 0.7;
+  document.getElementById('cfg_temperature').value   = cfg.temperature   ?? 0.2;
   document.getElementById('cfg_retry').value         = cfg.retry         ?? 2;
   document.getElementById('cfg_insert_mode').value   = cfg.insert_mode   ?? 'replace';
   document.getElementById('cfg_separator').value     = cfg.separator     ?? '\n';
