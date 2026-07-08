@@ -80,6 +80,8 @@ DEFAULTS = {
     "max_chars":       30000,
 }
 
+SENSITIVE_CONFIG_KEYS = {"auth_pass"}
+
 HOST = "0.0.0.0"
 PORT = 7860
 
@@ -176,6 +178,10 @@ def save_config(cfg: dict) -> None:
 
 
 CFG = load_config()
+
+
+def public_config(cfg: dict) -> dict:
+    return {k: v for k, v in cfg.items() if k not in SENSITIVE_CONFIG_KEYS}
 
 # ── Stats DB ─────────────────────────────────────────────────────────────────
 
@@ -2596,12 +2602,12 @@ def get_limits():
 
 @app.get("/config")
 def get_config():
-    return JSONResponse(CFG)
+    return JSONResponse(public_config(CFG))
 
 
 @app.get("/config/defaults")
 def get_defaults():
-    return JSONResponse(DEFAULTS)
+    return JSONResponse(public_config(DEFAULTS))
 
 
 @app.post("/config")
