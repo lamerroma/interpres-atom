@@ -52,7 +52,7 @@ if _missing_opt:
 
 import requests as req_lib
 from fastapi import FastAPI, UploadFile, File, Form, Request
-from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse, Response, FileResponse
+from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse, Response
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
@@ -413,13 +413,10 @@ async def basic_auth(request: Request, call_next):
 
 
 _active: dict[str, threading.Event] = {}
-_GENERATED_DIR = os.path.join(os.path.dirname(__file__), "generated")
-os.makedirs(_GENERATED_DIR, exist_ok=True)
-
-_results: dict[str, tuple[str, str, str, float]] = {}       # file_id -> (filename, path, mime, timestamp)
-_preview_cache: dict[str, tuple[str, float]] = {}           # file_id -> (HTML preview path, timestamp)
+_results: dict[str, tuple[str, bytes, str, float]] = {}     # file_id -> (filename, data, mime, timestamp)
+_preview_cache: dict[str, tuple[bytes, float]] = {}         # file_id -> (HTML preview data, timestamp)
 _result_lock = threading.Lock()
-_RESULT_TTL = 15 * 60                 # seconds to keep generated files if not downloaded
+_RESULT_TTL = 15 * 60                 # seconds to keep generated files in RAM if not downloaded
 _RESULT_MAX_ITEMS = 50                # cap memory use if many files are translated
 _sessions: dict[str, dict] = {}          # session_id -> {"last_seen": timestamp, "ip": str}
 _session_lock = threading.Lock()
@@ -431,28 +428,9 @@ _ticket_issued = 0
 _ticket_serving = 0
 
 
-def _remove_file_quiet(path: str | None) -> None:
-    if not path:
-        return
-    try:
-        if os.path.exists(path):
-            os.remove(path)
-    except Exception as e:
-        log.warning(f"failed to remove generated file {path}: {e}")
-
-
-def _safe_generated_name(name: str) -> str:
-    safe = os.path.basename(name).replace("\\", "_").replace("/", "_")
-    return safe or "translated_file"
-
-
 def _remove_generated_entry(file_id: str) -> None:
-    result = _results.pop(file_id, None)
-    if result:
-        _remove_file_quiet(result[1])
-    preview = _preview_cache.pop(file_id, None)
-    if preview:
-        _remove_file_quiet(preview[0])
+    _results.pop(file_id, None)
+    _preview_cache.pop(file_id, None)
 
 
 def _cleanup_generated_files(now: float | None = None) -> None:
@@ -469,6 +447,16 @@ def _cleanup_generated_files(now: float | None = None) -> None:
         oldest = sorted(_results.items(), key=lambda item: item[1][3])[:overflow]
         for file_id, _ in oldest:
             _remove_generated_entry(file_id)
+
+
+def _result_cleanup_worker() -> None:
+    while True:
+        time.sleep(60)
+        with _result_lock:
+            _cleanup_generated_files()
+
+
+threading.Thread(target=_result_cleanup_worker, daemon=True).start()
 
 
 def _cleanup_sessions(now: float | None = None) -> None:
@@ -3417,12 +3405,9 @@ async def translate_file_endpoint(
                     elif kind == "done":
                         _, out_filename, mime, data = event
                         file_id = str(uuid.uuid4())
-                        out_path = os.path.join(_GENERATED_DIR, f"{file_id}_{_safe_generated_name(out_filename)}")
                         with _result_lock:
                             _cleanup_generated_files()
-                            with open(out_path, "wb") as f:
-                                f.write(data)
-                            _results[file_id] = (out_filename, out_path, mime, time.time())
+                            _results[file_id] = (out_filename, data, mime, time.time())
                         final_status = "success"
                         yield f"data: {json.dumps({'type': 'download', 'url': f'/download/{file_id}', 'filename': out_filename})}\n\n"
                         # Generate HTML preview for DOCX files
@@ -3437,11 +3422,8 @@ async def translate_file_endpoint(
                                     "<section><h2>Переклад</h2>" + translated_html + "</section>"
                                     "</div>"
                                 )
-                                preview_path = os.path.join(_GENERATED_DIR, f"{file_id}_preview.html")
                                 with _result_lock:
-                                    with open(preview_path, "wb") as f:
-                                        f.write(html_val.encode("utf-8"))
-                                    _preview_cache[file_id] = (preview_path, time.time())
+                                    _preview_cache[file_id] = (html_val.encode("utf-8"), time.time())
                                 yield f"data: {json.dumps({'type': 'preview', 'url': f'/preview/{file_id}'})}\n\n"
                             except ImportError:
                                 yield f"data: {json.dumps({'type': 'log', 'text': 'Перегляд недоступний: встановіть mammoth (pip install mammoth)'})}\n\n"
@@ -3491,15 +3473,10 @@ def download_file(file_id: str):
         entry = _results.get(file_id)
     if not entry:
         return JSONResponse({"error": "not found"}, status_code=404)
-    filename, path, mime, _ = entry
-    if not os.path.exists(path):
-        with _result_lock:
-            _remove_generated_entry(file_id)
-        return JSONResponse({"error": "not found"}, status_code=404)
-    return FileResponse(
-        path,
+    filename, data, mime, _ = entry
+    return Response(
+        content=data,
         media_type=mime,
-        filename=filename,
         headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"},
         background=BackgroundTask(_remove_generated_entry, file_id),
     )
@@ -3512,13 +3489,7 @@ def preview_file(file_id: str):
         entry = _preview_cache.get(file_id)
     if not entry:
         return JSONResponse({"error": "not found"}, status_code=404)
-    path, _ = entry
-    if not os.path.exists(path):
-        with _result_lock:
-            _remove_generated_entry(file_id)
-        return JSONResponse({"error": "not found"}, status_code=404)
-    with open(path, "rb") as f:
-        html = f.read()
+    html, _ = entry
     # Wrap in a minimal page with basic typography
     wrapped = (
         "<!DOCTYPE html><html><head><meta charset='UTF-8'>"
