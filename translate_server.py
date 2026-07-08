@@ -3121,7 +3121,14 @@ async def translate_file_endpoint(
                         if ext == "docx":
                             try:
                                 import mammoth as _mammoth
-                                html_val = _mammoth.convert_to_html(io.BytesIO(data)).value
+                                original_html = _mammoth.convert_to_html(io.BytesIO(content)).value
+                                translated_html = _mammoth.convert_to_html(io.BytesIO(data)).value
+                                html_val = (
+                                    "<div class='preview-split'>"
+                                    "<section><h2>Оригінал</h2>" + original_html + "</section>"
+                                    "<section><h2>Переклад</h2>" + translated_html + "</section>"
+                                    "</div>"
+                                )
                                 preview_path = os.path.join(_GENERATED_DIR, f"{file_id}_preview.html")
                                 with _result_lock:
                                     with open(preview_path, "wb") as f:
@@ -3208,6 +3215,10 @@ def preview_file(file_id: str):
         "<!DOCTYPE html><html><head><meta charset='UTF-8'>"
         "<style>body{font-family:sans-serif;max-width:860px;margin:40px auto;"
         "padding:0 24px;line-height:1.6;color:#222;}"
+        ".preview-split{display:grid;grid-template-columns:1fr 1fr;gap:24px;align-items:start;}"
+        ".preview-split section{min-width:0;}"
+        ".preview-split h2{font-size:18px;margin:0 0 12px;color:#334155;}"
+        "@media(max-width:900px){.preview-split{grid-template-columns:1fr;}}"
         "table{border-collapse:collapse;width:100%}"
         "td,th{border:1px solid #ccc;padding:6px 10px}"
         "img{max-width:100%}</style></head><body>"
