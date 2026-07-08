@@ -2546,6 +2546,7 @@ ADMIN_HTML = r"""<!DOCTYPE html>
   td { padding: 8px 10px; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
   tr:hover td { background: #fbfdff; }
   .mono { font-family: "Cascadia Mono", Consolas, monospace; }
+  .file-name-cell { min-width: 260px; max-width: 420px; white-space: normal; overflow-wrap: anywhere; line-height: 1.35; }
   .empty-row { padding: 18px; text-align: center; color: #94a3b8; }
   .stats-grid { display:grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap:10px; margin-bottom:14px; }
   .mini-stat { background:#f8fafc; border:1px solid var(--line); border-radius:8px; padding:11px; min-width: 0; }
@@ -2947,7 +2948,7 @@ async function loadStats() {
         <td>${t}</td>
         <td class="mono">${r.ip||''}</td>
         <td>${r.kind||''}</td>
-        <td style="max-width:220px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${r.filename||''}</td>
+        <td class="file-name-cell" title="${(r.filename||'').replace(/"/g,'&quot;')}">${r.filename||''}</td>
         <td>${r.lang_from||''}→${r.lang_to||''}</td>
         <td style="text-align:right;">${r.chars ? fmtInt(r.chars) : ''}</td>
         <td style="text-align:right;">${r.pages??''}</td>
