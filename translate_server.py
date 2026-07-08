@@ -1767,7 +1767,6 @@ USER_HTML = r"""<!DOCTYPE html>
       <div class="conn-status">
         <span class="conn-dot" id="conn-dot"></span>
         <span id="conn-text">Перевірка...</span>
-        <span id="model-name" style="display:none;">· використовується мовна модель <strong id="model-name-val"></strong></span>
       </div>
     </div>
   </div>
@@ -2336,34 +2335,28 @@ async function doFileStop() {
   setWorking('file', false);
 }
 
-// ── Models & connection status ─────────────────────────────────────────
-async function loadModels() {
+// ── Service status ─────────────────────────────────────────────────────
+async function loadServiceStatus() {
   const dot      = document.getElementById('conn-dot');
   const txt      = document.getElementById('conn-text');
-  const modelRow = document.getElementById('model-name');
-  const modelVal = document.getElementById('model-name-val');
   try {
     const r    = await fetch('/models');
     const data = await r.json();
     if (data.ok && data.models.length > 0) {
       dot.className = 'conn-dot ok';
-      txt.textContent = 'Ollama підключена';
-      modelVal.textContent = data.current || '—';
-      modelRow.style.display = '';
+      txt.textContent = 'Сервіс готовий';
     } else {
       dot.className = 'conn-dot err';
-      txt.textContent = 'Ollama недоступна';
-      modelRow.style.display = 'none';
+      txt.textContent = 'Сервіс не готовий';
     }
   } catch (e) {
     dot.className = 'conn-dot err';
-    txt.textContent = "Помилка з'єднання";
-    modelRow.style.display = 'none';
+    txt.textContent = 'Сервіс не готовий';
   }
 }
 
 
-setInterval(loadModels, 30000);
+setInterval(loadServiceStatus, 30000);
 
 // ── Init ──────────────────────────────────────────────────────────────
 // ── Online presence ───────────────────────────────────────────────────────
@@ -2438,7 +2431,7 @@ function updateCharCounter() {
 document.getElementById('input').addEventListener('input', updateCharCounter);
 
 initLangs();
-loadModels();
+loadServiceStatus();
 loadAppConfig();
 document.getElementById('input').addEventListener('keydown', e => {
   if (e.ctrlKey && e.key === 'Enter') doTranslate();
