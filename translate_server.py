@@ -52,7 +52,7 @@ if _missing_opt:
 
 import requests as req_lib
 from fastapi import FastAPI, UploadFile, File, Form, Request
-from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse, Response
+from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse, Response, FileResponse
 from pydantic import BaseModel
 
 logging.basicConfig(level=logging.INFO,
@@ -412,8 +412,11 @@ async def basic_auth(request: Request, call_next):
 
 
 _active: dict[str, threading.Event] = {}
-_results: dict[str, tuple[str, bytes, str, float]] = {}
-_preview_cache: dict[str, tuple[bytes, float]] = {}  # file_id -> (HTML bytes from mammoth, timestamp)
+_GENERATED_DIR = os.path.join(os.path.dirname(__file__), "generated")
+os.makedirs(_GENERATED_DIR, exist_ok=True)
+
+_results: dict[str, tuple[str, str, str, float]] = {}       # file_id -> (filename, path, mime, timestamp)
+_preview_cache: dict[str, tuple[str, float]] = {}           # file_id -> (HTML preview path, timestamp)
 _result_lock = threading.Lock()
 _RESULT_TTL = 60 * 60                 # seconds to keep generated files available for download
 _RESULT_MAX_ITEMS = 50                # cap memory use if many files are translated
@@ -426,6 +429,30 @@ _ticket_issued = 0
 _ticket_serving = 0
 
 
+def _remove_file_quiet(path: str | None) -> None:
+    if not path:
+        return
+    try:
+        if os.path.exists(path):
+            os.remove(path)
+    except Exception as e:
+        log.warning(f"failed to remove generated file {path}: {e}")
+
+
+def _safe_generated_name(name: str) -> str:
+    safe = os.path.basename(name).replace("\\", "_").replace("/", "_")
+    return safe or "translated_file"
+
+
+def _remove_generated_entry(file_id: str) -> None:
+    result = _results.pop(file_id, None)
+    if result:
+        _remove_file_quiet(result[1])
+    preview = _preview_cache.pop(file_id, None)
+    if preview:
+        _remove_file_quiet(preview[0])
+
+
 def _cleanup_generated_files(now: float | None = None) -> None:
     now = now or time.time()
     expired = [
@@ -433,15 +460,13 @@ def _cleanup_generated_files(now: float | None = None) -> None:
         if now - created_at > _RESULT_TTL
     ]
     for file_id in expired:
-        _results.pop(file_id, None)
-        _preview_cache.pop(file_id, None)
+        _remove_generated_entry(file_id)
 
     overflow = max(0, len(_results) - _RESULT_MAX_ITEMS)
     if overflow:
         oldest = sorted(_results.items(), key=lambda item: item[1][3])[:overflow]
         for file_id, _ in oldest:
-            _results.pop(file_id, None)
-            _preview_cache.pop(file_id, None)
+            _remove_generated_entry(file_id)
 
 
 def _queue_worker():
@@ -3084,9 +3109,12 @@ async def translate_file_endpoint(
                     elif kind == "done":
                         _, out_filename, mime, data = event
                         file_id = str(uuid.uuid4())
+                        out_path = os.path.join(_GENERATED_DIR, f"{file_id}_{_safe_generated_name(out_filename)}")
                         with _result_lock:
                             _cleanup_generated_files()
-                            _results[file_id] = (out_filename, data, mime, time.time())
+                            with open(out_path, "wb") as f:
+                                f.write(data)
+                            _results[file_id] = (out_filename, out_path, mime, time.time())
                         final_status = "success"
                         yield f"data: {json.dumps({'type': 'download', 'url': f'/download/{file_id}', 'filename': out_filename})}\n\n"
                         # Generate HTML preview for DOCX files
@@ -3094,8 +3122,11 @@ async def translate_file_endpoint(
                             try:
                                 import mammoth as _mammoth
                                 html_val = _mammoth.convert_to_html(io.BytesIO(data)).value
+                                preview_path = os.path.join(_GENERATED_DIR, f"{file_id}_preview.html")
                                 with _result_lock:
-                                    _preview_cache[file_id] = (html_val.encode("utf-8"), time.time())
+                                    with open(preview_path, "wb") as f:
+                                        f.write(html_val.encode("utf-8"))
+                                    _preview_cache[file_id] = (preview_path, time.time())
                                 yield f"data: {json.dumps({'type': 'preview', 'url': f'/preview/{file_id}'})}\n\n"
                             except ImportError:
                                 yield f"data: {json.dumps({'type': 'log', 'text': 'Перегляд недоступний: встановіть mammoth (pip install mammoth)'})}\n\n"
@@ -3145,10 +3176,15 @@ def download_file(file_id: str):
         entry = _results.get(file_id)
     if not entry:
         return JSONResponse({"error": "not found"}, status_code=404)
-    filename, data, mime, _ = entry
-    return Response(
-        content=data,
+    filename, path, mime, _ = entry
+    if not os.path.exists(path):
+        with _result_lock:
+            _remove_generated_entry(file_id)
+        return JSONResponse({"error": "not found"}, status_code=404)
+    return FileResponse(
+        path,
         media_type=mime,
+        filename=filename,
         headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"},
     )
 
@@ -3160,7 +3196,13 @@ def preview_file(file_id: str):
         entry = _preview_cache.get(file_id)
     if not entry:
         return JSONResponse({"error": "not found"}, status_code=404)
-    html, _ = entry
+    path, _ = entry
+    if not os.path.exists(path):
+        with _result_lock:
+            _remove_generated_entry(file_id)
+        return JSONResponse({"error": "not found"}, status_code=404)
+    with open(path, "rb") as f:
+        html = f.read()
     # Wrap in a minimal page with basic typography
     wrapped = (
         "<!DOCTYPE html><html><head><meta charset='UTF-8'>"

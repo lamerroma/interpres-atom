@@ -2,4 +2,5 @@ __pycache__/
 *.pyc
 .claude/
 *.db
+generated/
 translate_server – копія.txt
