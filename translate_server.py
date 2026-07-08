@@ -420,7 +420,8 @@ _preview_cache: dict[str, tuple[str, float]] = {}           # file_id -> (HTML p
 _result_lock = threading.Lock()
 _RESULT_TTL = 60 * 60                 # seconds to keep generated files available for download
 _RESULT_MAX_ITEMS = 50                # cap memory use if many files are translated
-_sessions: dict[str, float] = {}        # session_id -> last_seen timestamp
+_sessions: dict[str, dict] = {}          # session_id -> {"last_seen": timestamp, "ip": str}
+_session_lock = threading.Lock()
 _SESSION_TTL = 45                       # seconds before a session is considered gone
 
 _job_queue: _queue_mod.Queue = _queue_mod.Queue()
@@ -467,6 +468,31 @@ def _cleanup_generated_files(now: float | None = None) -> None:
         oldest = sorted(_results.items(), key=lambda item: item[1][3])[:overflow]
         for file_id, _ in oldest:
             _remove_generated_entry(file_id)
+
+
+def _cleanup_sessions(now: float | None = None) -> None:
+    now = now or time.time()
+    stale = [
+        sid for sid, info in _sessions.items()
+        if now - info.get("last_seen", 0) > _SESSION_TTL
+    ]
+    for sid in stale:
+        _sessions.pop(sid, None)
+
+
+def get_online_sessions() -> list[dict]:
+    now = time.time()
+    with _session_lock:
+        _cleanup_sessions(now)
+        return [
+            {
+                "sid": sid[-8:],
+                "ip": info.get("ip") or "",
+                "last_seen": datetime.datetime.fromtimestamp(info.get("last_seen", now)).isoformat(timespec="seconds"),
+                "idle_seconds": round(now - info.get("last_seen", now)),
+            }
+            for sid, info in sorted(_sessions.items(), key=lambda item: item[1].get("last_seen", 0), reverse=True)
+        ]
 
 
 def _queue_worker():
@@ -2464,6 +2490,31 @@ ADMIN_HTML = r"""<!DOCTYPE html>
 <a class="back-link" href="/">&#8592; На головну</a>
 <h1>Interpres-Atom — Адміністрування</h1>
 
+<!-- Online users -->
+<div class="card">
+  <details id="online-details" open>
+    <summary>&#128101; Онлайн-користувачі: <span id="admin-online-count">—</span></summary>
+    <div style="margin-top:16px;">
+      <div style="overflow:auto; border:1px solid #e2e8f0; border-radius:6px;">
+        <table style="width:100%; border-collapse:collapse; font-size:.86rem;">
+          <thead>
+            <tr style="background:#f1f5f9; text-align:left;">
+              <th style="padding:7px 10px; border-bottom:1px solid #e2e8f0;">IP</th>
+              <th style="padding:7px 10px; border-bottom:1px solid #e2e8f0;">Остання активність</th>
+              <th style="padding:7px 10px; border-bottom:1px solid #e2e8f0;">Неактивний, с</th>
+              <th style="padding:7px 10px; border-bottom:1px solid #e2e8f0;">Сесія</th>
+            </tr>
+          </thead>
+          <tbody id="online-tbody"></tbody>
+        </table>
+      </div>
+      <div class="btn-row" style="margin-top:10px;">
+        <button onclick="loadOnline()" style="background:#6b7280;">&#8635; Оновити</button>
+      </div>
+    </div>
+  </details>
+</div>
+
 <!-- Stats -->
 <div class="card">
   <details id="stats-details">
@@ -2623,6 +2674,26 @@ ADMIN_HTML = r"""<!DOCTYPE html>
 </div>
 
 <script>
+async function loadOnline() {
+  try {
+    const r = await fetch('/admin/online');
+    const d = await r.json();
+    document.getElementById('admin-online-count').textContent = d.online ?? 0;
+    const rows = (d.sessions || []).map(s => `
+      <tr>
+        <td style="padding:7px 10px; border-bottom:1px solid #f1f5f9; font-family:monospace;">${s.ip || '—'}</td>
+        <td style="padding:7px 10px; border-bottom:1px solid #f1f5f9;">${s.last_seen || '—'}</td>
+        <td style="padding:7px 10px; border-bottom:1px solid #f1f5f9;">${s.idle_seconds ?? '—'}</td>
+        <td style="padding:7px 10px; border-bottom:1px solid #f1f5f9; font-family:monospace;">${s.sid || '—'}</td>
+      </tr>
+    `).join('');
+    document.getElementById('online-tbody').innerHTML = rows || '<tr><td colspan="4" style="padding:16px; text-align:center; color:#94a3b8;">Немає активних користувачів</td></tr>';
+  } catch (e) {
+    document.getElementById('admin-online-count').textContent = '—';
+    document.getElementById('online-tbody').innerHTML = `<tr><td colspan="4" style="padding:10px; color:#dc2626;">Помилка: ${e}</td></tr>`;
+  }
+}
+
 function toggleSeparator() {
   const mode = document.getElementById('cfg_insert_mode').value;
   document.getElementById('cfg_separator_row').style.display = (mode === 'replace') ? 'none' : '';
@@ -2746,7 +2817,27 @@ document.getElementById('stats-details').addEventListener('toggle', e => {
   if (e.target.open) loadStats();
 });
 
+const _adminSessionId = (typeof crypto !== 'undefined' && crypto.randomUUID)
+  ? crypto.randomUUID()
+  : Math.random().toString(36).slice(2) + Date.now().toString(36);
+
+async function sendAdminHeartbeat() {
+  await fetch('/heartbeat', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({sid: _adminSessionId}),
+  }).catch(() => {});
+  loadOnline();
+}
+
+function sendAdminLeave() {
+  navigator.sendBeacon('/heartbeat-leave', JSON.stringify({sid: _adminSessionId}));
+}
+
 loadSettings();
+sendAdminHeartbeat();
+setInterval(sendAdminHeartbeat, 15000);
+window.addEventListener('pagehide', sendAdminLeave);
 </script>
 </body>
 </html>"""
@@ -2780,6 +2871,12 @@ def admin_stats(limit: int = 100):
         "summary": get_stats_summary(),
         "recent": get_recent_stats(limit),
     })
+
+
+@app.get("/admin/online")
+def admin_online():
+    sessions = get_online_sessions()
+    return JSONResponse({"online": len(sessions), "sessions": sessions})
 
 
 @app.post("/admin/stats/clear")
@@ -3280,24 +3377,25 @@ def preview_file(file_id: str):
 
 
 @app.post("/heartbeat")
-def heartbeat(data: dict):
+def heartbeat(data: dict, request: Request):
     sid = data.get("sid", "")
     if not sid:
         return JSONResponse({"online": 0}, status_code=400)
     now = time.time()
-    _sessions[sid] = now
-    # Cleanup stale sessions on every heartbeat call
-    stale = [k for k, t in _sessions.items() if now - t > _SESSION_TTL]
-    for k in stale:
-        _sessions.pop(k, None)
-    return JSONResponse({"online": len(_sessions)})
+    client_ip = request.client.host if request.client else ""
+    with _session_lock:
+        _sessions[sid] = {"last_seen": now, "ip": client_ip}
+        _cleanup_sessions(now)
+        online = len(_sessions)
+    return JSONResponse({"online": online})
 
 
 @app.post("/heartbeat-leave")
 async def heartbeat_leave(request: Request):
     try:
         data = await request.json()
-        _sessions.pop(data.get("sid", ""), None)
+        with _session_lock:
+            _sessions.pop(data.get("sid", ""), None)
     except Exception:
         pass
     return JSONResponse({"ok": True})
