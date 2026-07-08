@@ -1155,7 +1155,6 @@ USER_HTML = r"""<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Interpres-Atom</title>
-<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   :root {
@@ -1792,13 +1791,87 @@ async function doTranslate() {
   _textRequestId = null;
 }
 
+function escapeHtml(text) {
+  return String(text ?? '').replace(/[&<>"']/g, ch => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[ch]));
+}
+
+function renderInlineMarkdown(text) {
+  let html = escapeHtml(text);
+  html = html.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+  html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  html = html.replace(/__([^_]+)__/g, '<strong>$1</strong>');
+  html = html.replace(/\*([^*\n]+)\*/g, '<em>$1</em>');
+  html = html.replace(/_([^_\n]+)_/g, '<em>$1</em>');
+  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+  return html;
+}
+
+function renderMarkdown(text) {
+  const lines = String(text ?? '').replace(/\r\n/g, '\n').split('\n');
+  const out = [];
+  let listType = null;
+
+  function closeList() {
+    if (listType) {
+      out.push(`</${listType}>`);
+      listType = null;
+    }
+  }
+
+  for (const rawLine of lines) {
+    const line = rawLine.trimEnd();
+    if (!line.trim()) {
+      closeList();
+      continue;
+    }
+
+    const heading = line.match(/^(#{1,3})\s+(.+)$/);
+    if (heading) {
+      closeList();
+      const level = heading[1].length;
+      out.push(`<h${level}>${renderInlineMarkdown(heading[2])}</h${level}>`);
+      continue;
+    }
+
+    const bullet = line.match(/^\s*[-*]\s+(.+)$/);
+    if (bullet) {
+      if (listType !== 'ul') {
+        closeList();
+        out.push('<ul>');
+        listType = 'ul';
+      }
+      out.push(`<li>${renderInlineMarkdown(bullet[1])}</li>`);
+      continue;
+    }
+
+    const numbered = line.match(/^\s*\d+[.)]\s+(.+)$/);
+    if (numbered) {
+      if (listType !== 'ol') {
+        closeList();
+        out.push('<ol>');
+        listType = 'ol';
+      }
+      out.push(`<li>${renderInlineMarkdown(numbered[1])}</li>`);
+      continue;
+    }
+
+    closeList();
+    out.push(`<p>${renderInlineMarkdown(line)}</p>`);
+  }
+
+  closeList();
+  return out.join('');
+}
+
 function showResult(text, format) {
   const resultEl = document.getElementById('result');
   resultEl.classList.remove('streaming');
-  if (format === 'markdown' && typeof marked !== 'undefined') {
-    resultEl.innerHTML = marked.parse(text);
+  if (format === 'markdown') {
+    resultEl.innerHTML = renderMarkdown(text);
   } else {
-    resultEl.innerHTML = text;
+    resultEl.textContent = text;
   }
 }
 
@@ -2750,7 +2823,7 @@ def translate_html(req: TranslateHtmlRequest, request: Request):
 
                 final_status = "success"
                 yield log_event(f"[{ts()}] Done — {len(translated_md)} chars")
-                # Send Markdown — frontend renders it via marked.js (like OpenWebUI)
+                # Send Markdown — frontend renders it with the local lightweight renderer.
                 yield f"data: {json.dumps({'type': 'result', 'text': translated_md, 'format': 'markdown'})}\n\n"
 
             except req_lib.exceptions.Timeout:
