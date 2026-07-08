@@ -369,8 +369,11 @@ async def basic_auth(request: Request, call_next):
 
 
 _active: dict[str, threading.Event] = {}
-_results: dict[str, tuple[str, bytes]] = {}
-_preview_cache: dict[str, bytes] = {}   # file_id -> HTML bytes from mammoth
+_results: dict[str, tuple[str, bytes, str, float]] = {}
+_preview_cache: dict[str, tuple[bytes, float]] = {}  # file_id -> (HTML bytes from mammoth, timestamp)
+_result_lock = threading.Lock()
+_RESULT_TTL = 60 * 60                 # seconds to keep generated files available for download
+_RESULT_MAX_ITEMS = 50                # cap memory use if many files are translated
 _sessions: dict[str, float] = {}        # session_id -> last_seen timestamp
 _SESSION_TTL = 45                       # seconds before a session is considered gone
 
@@ -378,6 +381,24 @@ _job_queue: _queue_mod.Queue = _queue_mod.Queue()
 _ticket_lock = threading.Lock()
 _ticket_issued = 0
 _ticket_serving = 0
+
+
+def _cleanup_generated_files(now: float | None = None) -> None:
+    now = now or time.time()
+    expired = [
+        file_id for file_id, (_, _, _, created_at) in _results.items()
+        if now - created_at > _RESULT_TTL
+    ]
+    for file_id in expired:
+        _results.pop(file_id, None)
+        _preview_cache.pop(file_id, None)
+
+    overflow = max(0, len(_results) - _RESULT_MAX_ITEMS)
+    if overflow:
+        oldest = sorted(_results.items(), key=lambda item: item[1][3])[:overflow]
+        for file_id, _ in oldest:
+            _results.pop(file_id, None)
+            _preview_cache.pop(file_id, None)
 
 
 def _queue_worker():
@@ -2923,7 +2944,9 @@ async def translate_file_endpoint(
                     elif kind == "done":
                         _, out_filename, mime, data = event
                         file_id = str(uuid.uuid4())
-                        _results[file_id] = (out_filename, data, mime)
+                        with _result_lock:
+                            _cleanup_generated_files()
+                            _results[file_id] = (out_filename, data, mime, time.time())
                         final_status = "success"
                         yield f"data: {json.dumps({'type': 'download', 'url': f'/download/{file_id}', 'filename': out_filename})}\n\n"
                         # Generate HTML preview for DOCX files
@@ -2931,7 +2954,8 @@ async def translate_file_endpoint(
                             try:
                                 import mammoth as _mammoth
                                 html_val = _mammoth.convert_to_html(io.BytesIO(data)).value
-                                _preview_cache[file_id] = html_val.encode("utf-8")
+                                with _result_lock:
+                                    _preview_cache[file_id] = (html_val.encode("utf-8"), time.time())
                                 yield f"data: {json.dumps({'type': 'preview', 'url': f'/preview/{file_id}'})}\n\n"
                             except ImportError:
                                 yield f"data: {json.dumps({'type': 'log', 'text': 'Перегляд недоступний: встановіть mammoth (pip install mammoth)'})}\n\n"
@@ -2975,10 +2999,12 @@ async def translate_file_endpoint(
 
 @app.get("/download/{file_id}")
 def download_file(file_id: str):
-    entry = _results.get(file_id)
+    with _result_lock:
+        _cleanup_generated_files()
+        entry = _results.get(file_id)
     if not entry:
         return JSONResponse({"error": "not found"}, status_code=404)
-    filename, data, mime = entry
+    filename, data, mime, _ = entry
     return Response(
         content=data,
         media_type=mime,
@@ -2988,9 +3014,12 @@ def download_file(file_id: str):
 
 @app.get("/preview/{file_id}")
 def preview_file(file_id: str):
-    html = _preview_cache.get(file_id)
-    if not html:
+    with _result_lock:
+        _cleanup_generated_files()
+        entry = _preview_cache.get(file_id)
+    if not entry:
         return JSONResponse({"error": "not found"}, status_code=404)
+    html, _ = entry
     # Wrap in a minimal page with basic typography
     wrapped = (
         "<!DOCTYPE html><html><head><meta charset='UTF-8'>"
