@@ -2149,6 +2149,12 @@ async function doTranslateFile() {
             fileLog(label);
           }
         }
+        else if (evt.type === 'queue' && evt.ahead > 0) {
+          setProgress(0, `У черзі: попереду ${evt.ahead}`);
+        }
+        else if (evt.type === 'queue' && evt.ahead === 0) {
+          setProgress(0, 'Переклад розпочато');
+        }
         else if (evt.type === 'progress') {
           const pct = evt.pct || 0;
           let label = evt.text || '';
@@ -2996,6 +3002,7 @@ async def translate_file_endpoint(
     lang_from: str = Form("auto"),
     lang_to: str = Form("Ukrainian"),
 ):
+    global _ticket_issued
     content = await file.read()
     filename = file.filename or "file.txt"
     ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "txt"
@@ -3005,6 +3012,13 @@ async def translate_file_endpoint(
     request_id = str(uuid.uuid4())
     stop_event = threading.Event()
     _active[request_id] = stop_event
+
+    start_evt = threading.Event()
+    done_evt = threading.Event()
+    with _ticket_lock:
+        _ticket_issued += 1
+        my_ticket = _ticket_issued
+    _job_queue.put((start_evt, done_evt))
 
     def generate():
         def ts():
@@ -3021,6 +3035,18 @@ async def translate_file_endpoint(
         try:
             yield f"data: {json.dumps({'type': 'id', 'text': request_id})}\n\n"
             yield log_event(f"File: {filename} ({len(content)} bytes)")
+
+            while not start_evt.wait(timeout=2):
+                if stop_event.is_set():
+                    final_status = "stopped"
+                    yield f"data: {json.dumps({'type': 'done'})}\n\n"
+                    return
+                with _ticket_lock:
+                    ahead = my_ticket - _ticket_serving
+                if ahead > 0:
+                    yield f"data: {json.dumps({'type': 'queue', 'ahead': ahead})}\n\n"
+
+            yield f"data: {json.dumps({'type': 'queue', 'ahead': 0})}\n\n"
 
             if ext == "docx":
                 it = translate_docx_bytes(content, base, lang_from, lang_to, stop_event)
@@ -3093,6 +3119,7 @@ async def translate_file_endpoint(
                 return
 
         finally:
+            done_evt.set()
             _active.pop(request_id, None)
             log_stat(
                 ip=client_ip,
