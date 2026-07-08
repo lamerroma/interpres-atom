@@ -426,6 +426,8 @@ _job_queue: _queue_mod.Queue = _queue_mod.Queue()
 _ticket_lock = threading.Lock()
 _ticket_issued = 0
 _ticket_serving = 0
+_job_active = False
+_job_started_at: float | None = None
 
 
 def _remove_generated_entry(file_id: str) -> None:
@@ -485,16 +487,49 @@ def get_online_sessions() -> list[dict]:
 
 
 def _queue_worker():
-    global _ticket_serving
+    global _ticket_serving, _job_active, _job_started_at
     while True:
         start_evt, done_evt = _job_queue.get()
         with _ticket_lock:
             _ticket_serving += 1
+            _job_active = True
+            _job_started_at = time.time()
         start_evt.set()
         done_evt.wait()
+        with _ticket_lock:
+            _job_active = False
+            _job_started_at = None
+        _job_queue.task_done()
 
 
 threading.Thread(target=_queue_worker, daemon=True).start()
+
+
+def get_server_status() -> dict:
+    now = time.time()
+    with _ticket_lock:
+        active = _job_active
+        active_seconds = round(now - _job_started_at) if active and _job_started_at else 0
+        issued = _ticket_issued
+        serving = _ticket_serving
+    with _result_lock:
+        _cleanup_generated_files(now)
+        result_count = len(_results)
+        preview_count = len(_preview_cache)
+        result_bytes = sum(len(item[1]) for item in _results.values())
+        preview_bytes = sum(len(item[0]) for item in _preview_cache.values())
+    return {
+        "active": active,
+        "active_seconds": active_seconds,
+        "waiting": _job_queue.qsize(),
+        "issued": issued,
+        "serving": serving,
+        "ram_items": result_count,
+        "preview_items": preview_count,
+        "ram_bytes": result_bytes + preview_bytes,
+        "result_ttl_seconds": _RESULT_TTL,
+        "result_max_items": _RESULT_MAX_ITEMS,
+    }
 
 
 def extract_text(filename: str, content: bytes) -> str:
@@ -2490,7 +2525,7 @@ ADMIN_HTML = r"""<!DOCTYPE html>
   .dot { width: 8px; height: 8px; border-radius: 50%; background: #94a3b8; }
   .dot.ok { background: var(--success); box-shadow: 0 0 0 3px rgba(22,163,74,.12); }
   .dot.err { background: var(--danger); box-shadow: 0 0 0 3px rgba(220,38,38,.12); }
-  .overview-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 16px; }
+  .overview-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; margin-bottom: 16px; }
   .metric-card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px; min-height: 92px; }
   .metric-label { color: var(--muted); font-size: .76rem; text-transform: uppercase; letter-spacing: .04em; margin-bottom: 8px; }
   .metric-value { font-size: 1.35rem; font-weight: 700; line-height: 1.15; overflow-wrap: anywhere; }
@@ -2541,6 +2576,7 @@ ADMIN_HTML = r"""<!DOCTYPE html>
   .mini-stat { background:#f8fafc; border:1px solid var(--line); border-radius:8px; padding:11px; min-width: 0; }
   .mini-stat-label { font-size:.7rem; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .mini-stat-value { font-size:1.18rem; font-weight:700; color:#1e293b; margin-top:3px; overflow-wrap:anywhere; }
+  .load-grid { display:grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap:10px; }
   @media (max-width: 900px) {
     .admin-shell { padding: 16px; }
     .topbar { align-items: flex-start; flex-direction: column; }
@@ -2548,9 +2584,11 @@ ADMIN_HTML = r"""<!DOCTYPE html>
     .overview-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .settings-grid { grid-template-columns: 1fr; }
     .stats-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .load-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   }
   @media (max-width: 560px) {
     .overview-grid { grid-template-columns: 1fr; }
+    .load-grid { grid-template-columns: 1fr; }
   }
 </style>
 </head>
@@ -2584,6 +2622,11 @@ ADMIN_HTML = r"""<!DOCTYPE html>
     <div class="metric-note">активні сесії</div>
   </div>
   <div class="metric-card">
+    <div class="metric-label">Черга</div>
+    <div class="metric-value" id="overview-queue">—</div>
+    <div class="metric-note" id="overview-queue-note">очікує перевірки</div>
+  </div>
+  <div class="metric-card">
     <div class="metric-label">Останні задачі</div>
     <div class="metric-value" id="overview-jobs">—</div>
     <div class="metric-note" id="overview-jobs-note">за журналом</div>
@@ -2591,6 +2634,34 @@ ADMIN_HTML = r"""<!DOCTYPE html>
 </div>
 
 <div class="layout-grid">
+
+<!-- Server load -->
+<div class="card">
+  <details id="load-details" open>
+    <summary><span class="summary-title">&#9889; Навантаження сервісу</span><span class="summary-pill" id="load-pill">—</span></summary>
+    <div class="card-body">
+      <div class="load-grid">
+        <div class="mini-stat">
+          <div class="mini-stat-label">Поточна задача</div>
+          <div class="mini-stat-value" id="load-active">—</div>
+        </div>
+        <div class="mini-stat">
+          <div class="mini-stat-label">Очікує в черзі</div>
+          <div class="mini-stat-value" id="load-waiting">—</div>
+        </div>
+        <div class="mini-stat">
+          <div class="mini-stat-label">RAM результатів</div>
+          <div class="mini-stat-value" id="load-ram">—</div>
+        </div>
+        <div class="mini-stat">
+          <div class="mini-stat-label">TTL результату</div>
+          <div class="mini-stat-value" id="load-ttl">—</div>
+        </div>
+      </div>
+      <div class="metric-note" id="load-note" style="margin-top:10px;">Оновлюється автоматично.</div>
+    </div>
+  </details>
+</div>
 
 <!-- Online users -->
 <div class="card">
@@ -2784,6 +2855,23 @@ function fmtInt(value) {
   return Number(value || 0).toLocaleString('uk-UA');
 }
 
+function fmtBytes(value) {
+  const bytes = Number(value || 0);
+  if (bytes >= 1024 * 1024) return (bytes / 1024 / 1024).toFixed(1) + ' MB';
+  if (bytes >= 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  return bytes + ' B';
+}
+
+function fmtDurationShort(seconds) {
+  seconds = Math.max(0, Math.round(Number(seconds || 0)));
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = seconds % 60;
+  if (h) return `${h} год ${m} хв`;
+  if (m) return `${m} хв${s ? ' ' + s + ' с' : ''}`;
+  return `${s} с`;
+}
+
 async function loadAdminService() {
   const dot = document.getElementById('admin-service-dot');
   const text = document.getElementById('admin-service-text');
@@ -2809,6 +2897,30 @@ async function loadAdminService() {
     text.textContent = 'Сервіс не готовий';
     overview.textContent = 'Не готовий';
     note.textContent = String(e);
+  }
+}
+
+async function loadServerStatus() {
+  try {
+    const r = await fetch('/admin/server-status');
+    const d = await r.json();
+    const busyText = d.active ? 'Зайнятий' : 'Вільний';
+    const queueText = d.waiting > 0 ? `${d.waiting} очікує` : '0';
+    document.getElementById('overview-queue').textContent = d.active ? `1 + ${d.waiting}` : queueText;
+    document.getElementById('overview-queue-note').textContent =
+      d.active ? `працює ${fmtDurationShort(d.active_seconds)}` : 'немає активного перекладу';
+    document.getElementById('load-pill').textContent = d.active || d.waiting ? 'є навантаження' : 'вільно';
+    document.getElementById('load-active').textContent = busyText;
+    document.getElementById('load-waiting').textContent = fmtInt(d.waiting);
+    document.getElementById('load-ram').textContent = fmtBytes(d.ram_bytes);
+    document.getElementById('load-ttl').textContent = fmtDurationShort(d.result_ttl_seconds);
+    document.getElementById('load-note').textContent =
+      `Видано задач: ${fmtInt(d.issued)} · поточний ticket: ${fmtInt(d.serving)} · результатів у RAM: ${fmtInt(d.ram_items)} · preview: ${fmtInt(d.preview_items)}`;
+  } catch (e) {
+    document.getElementById('overview-queue').textContent = '—';
+    document.getElementById('overview-queue-note').textContent = 'не вдалося прочитати чергу';
+    document.getElementById('load-pill').textContent = 'помилка';
+    document.getElementById('load-note').textContent = 'Помилка: ' + e;
   }
 }
 
@@ -2981,9 +3093,11 @@ function sendAdminLeave() {
 
 loadSettings();
 loadAdminService();
+loadServerStatus();
 loadStats();
 sendAdminHeartbeat();
 setInterval(loadAdminService, 30000);
+setInterval(loadServerStatus, 5000);
 setInterval(sendAdminHeartbeat, 15000);
 window.addEventListener('pagehide', sendAdminLeave);
 </script>
@@ -3025,6 +3139,11 @@ def admin_stats(limit: int = 100):
 def admin_online():
     sessions = get_online_sessions()
     return JSONResponse({"online": len(sessions), "sessions": sessions})
+
+
+@app.get("/admin/server-status")
+def admin_server_status():
+    return JSONResponse(get_server_status())
 
 
 @app.post("/admin/stats/clear")
