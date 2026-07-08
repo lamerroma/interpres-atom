@@ -1,0 +1,300 @@
+diff --git a/ui_layout.py b/ui_layout.py
+index e593af8..208d956 100644
+--- a/ui_layout.py
++++ b/ui_layout.py
+@@ -319,7 +319,7 @@ def get_custom_css():
+         gap: 0 !important;
+     }
+ 
+-    /* Dropdown list container - 确保在最上层 */
++    /* Dropdown list container - Переконайтеся, що він на верхньому рівні */
+     #lang-row .gr-dropdown ul,
+     #lang-row .gr-dropdown [role="listbox"] {
+         display: flex !important;
+@@ -514,7 +514,7 @@ def get_custom_css():
+         overflow: visible !important;
+     }
+ 
+-    /* 当内部下拉框展开时，提升整个行的层级 */
++    /* Коли внутрішнє випадаюче меню розгортається, підніміть z-index рядка */
+     #model-glossary-row:has(.gr-dropdown:focus-within) {
+         z-index: 2200 !important;
+     }
+@@ -663,7 +663,7 @@ def get_custom_css():
+         transition: var(--transition-bounce) !important;
+         position: relative !important;
+         overflow: hidden !important;
+-        padding: 14px 24px !important;  /* 统一所有按钮的 padding */
++        padding: 14px 24px !important;  /* Єдиний padding для всіх кнопок */
+         font-size: 0.95rem !important;
+     }
+ 
+@@ -814,7 +814,7 @@ def get_custom_css():
+         transition: z-index 0s !important;
+     }
+ 
+-    /* 当下拉框展开时(有焦点时)提升层级 */
++    /* Коли випадаюче меню розгортається (при фокусі) — підніміть z-index */
+     .gr-dropdown:focus-within {
+         z-index: 2200 !important;
+     }
+@@ -857,7 +857,7 @@ def get_custom_css():
+         transform: translateY(2px) !important;
+     }
+ 
+-    /* Dropdown list (general) - 确保在最上层 */
++    /* Dropdown list (general) — Переконайтеся, що він на верхньому рівні */
+     .gr-dropdown ul,
+     .gr-dropdown [role="listbox"] {
+         background: var(--haru-surface-elevated) !important;
+@@ -977,38 +977,38 @@ def get_custom_css():
+     }
+ 
+     /* ═══════════════════════════════════════════════════════════════
+-       VERTICAL SPACING - 元素之间的垂直间距
++       VERTICAL SPACING — Вертикальна відстань між елементами
+     ═══════════════════════════════════════════════════════════════ */
+ 
+-    /* 设置行之间的间距 */
++    /* Встановіть відстань між рядками */
+     .gradio-container .gr-row {
+         margin-bottom: 16px !important;
+     }
+ 
+-    /* Checkbox 和 Slider 所在的列需要内边距 */
++    /* Колони з Checkbox та Slider потребують padding */
+     .gradio-container .gr-row > .gr-column {
+         padding: 8px 4px !important;
+     }
+ 
+-    /* 单独的 checkbox 和 slider 元素间距 */
++    /* Відстань окремих checkbox та slider елементів */
+     .gradio-container .gr-checkbox,
+     .gradio-container .gr-slider {
+         margin-bottom: 8px !important;
+     }
+ 
+-    /* 主要区块之间的间距 */
++    /* Відстань між основними блоками */
+     .gradio-container .gr-group,
+     .gradio-container .gr-box,
+     .gradio-container .gr-panel {
+         margin-bottom: 20px !important;
+     }
+ 
+-    /* 文件上传和按钮之间的间距 */
++    /* Відстань між завантаженням файлу та кнопками */
+     .gradio-container .gr-file {
+         margin-bottom: 16px !important;
+     }
+ 
+-    /* 状态消息框的间距 */
++    /* Відстань поля статус-повідомлення */
+     .gradio-container .gr-textbox {
+         margin-bottom: 12px !important;
+     }
+@@ -1136,7 +1136,7 @@ def get_custom_css():
+         transition: z-index 0s !important;
+     }
+ 
+-    /* 当下拉框展开时提升层级 */
++    /* Коли випадаюче меню розгортається — підніміть z-index */
+     #model-dropdown:focus-within,
+     #glossary-dropdown:focus-within {
+         z-index: 2200 !important;
+@@ -1156,12 +1156,12 @@ def get_custom_css():
+ 
+     /* ═══════════════════════════════════════════════════════════════
+        API KEY SECTION - IMPROVED LAYOUT
+-       Order: [API Key] [Input Field] [记住密钥 ?]
++       Order: [API Key] [Input Field] [Запам'ятати ключ ?]
+ 
+-       注意：不设置 display 属性，完全由 Gradio 控制可见性
++       Увага: не встановлюйте атрибут display, Gradio повністю контролює видимість
+     ═══════════════════════════════════════════════════════════════ */
+     #api-key-section {
+-        /* 不设置 display! 让 Gradio 完全控制 */
++        /* Не встановлюйте display! Дозвольте Gradio повністю контролювати */
+         align-items: center;
+         gap: 12px;
+         padding: 16px 20px;
+@@ -1176,13 +1176,13 @@ def get_custom_css():
+         overflow: visible;
+     }
+ 
+-    /* 让Input占据中间所有空间，其他元素挤到两边 */
++    /* Дозвольте Input займати весь середній простір, інші елементи по краях */
+     #api-key-section > div:nth-child(2) {
+         flex: 1 1 auto !important;
+         min-width: 0 !important;
+     }
+ 
+-    /* [API Key] 标签 - 尽可能短，自动宽度 */
++    /* [API Key] мітка — якомога коротше, автоматична ширина */
+     .api-key-label-group {
+         flex: 0 0 auto !important;
+         display: inline-flex !important;
+@@ -1203,7 +1203,7 @@ def get_custom_css():
+         width: auto !important;
+     }
+ 
+-    /* [Input Field] - 占用所有剩余空间 */
++    /* [Input Field] — займає весь залишок простору */
+     #api-key-input {
+         flex: 1 1 auto !important;
+         min-width: 0 !important;
+@@ -1216,7 +1216,7 @@ def get_custom_css():
+         width: 100% !important;
+     }
+ 
+-    /* [记住密钥] checkbox - 背景透明，不占额外空间 */
++    /* [Запам'ятати ключ] checkbox - прозорий фон, без додаткового місця */
+     #remember-key-checkbox {
+         flex: 0 0 auto !important;
+         width: auto !important;
+@@ -1231,7 +1231,7 @@ def get_custom_css():
+         background-color: transparent !important;
+     }
+ 
+-    /* 让 remember-key-checkbox 的 .form 容器使用 flex 并右对齐 */
++    /* Дозвольте контейнеру .form remember-key-checkbox використовувати flex та вирівняти справа */
+     #api-key-section > div.form,
+     #api-key-section .form,
+     #remember-key-checkbox > div.form,
+@@ -1244,11 +1244,11 @@ def get_custom_css():
+         padding: 0 !important;
+         margin: 0 !important;
+         display: flex !important;
+-        justify-content: flex-end !important;  /* 内容右对齐 */
++        justify-content: flex-end !important;  /* Вирівняти вміст справа */
+         width: 100% !important;
+     }
+ 
+-    /* label 本身也右对齐 */
++    /* label сам по собі вирівняний справа */
+     #remember-key-checkbox > label,
+     #remember-key-checkbox label {
+         background: transparent !important;
+@@ -1257,7 +1257,7 @@ def get_custom_css():
+         box-shadow: none !important;
+         padding: 4px 8px !important;
+         margin: 0 !important;
+-        margin-left: auto !important;  /* 推到右边 */
++        margin-left: auto !important;  /* Штовхнути до правого краю */
+         font-size: 0.88rem !important;
+         font-weight: 500 !important;
+         white-space: nowrap !important;
+@@ -1272,7 +1272,7 @@ def get_custom_css():
+         color: var(--haru-text) !important;
+     }
+ 
+-    /* checkbox输入框保持正常样式 */
++    /* input поле checkbox зберігає нормальний стиль */
+     #remember-key-checkbox input[type="checkbox"] {
+         accent-color: var(--haru-primary) !important;
+         margin: 0 !important;
+@@ -1285,9 +1285,9 @@ def get_custom_css():
+         appearance: checkbox !important;
+     }
+ 
+-    /* [?] 帮助图标容器 - 固定宽高相同 */
+-    
+-    /* 隐藏 Gradio 自动生成的 wrap 加载容器 */
++    /* [?] контейнер іконки довідки — фіксована однакова ширина й висота */
++
++    /* Приховати Gradio автоматично генерований контейнер wrap для завантаження */
+     #api-help-container > div.wrap,
+     #api-help-container > div[class*="wrap"] {
+         display: none !important;
+@@ -1317,7 +1317,7 @@ def get_custom_css():
+         position: relative !important;
+     }
+ 
+-    /* HTML 内容容器 - 不限制尺寸让内容自然显示 */
++    /* Контейнер вмісту HTML — не обмежуйте розмір, дозвольте вмісту відображатися природно */
+     #api-help-container > div.html-container,
+     #api-help-container > div[class*="html-container"] {
+         width: auto !important;
+@@ -1353,7 +1353,7 @@ def get_custom_css():
+         margin: 0 !important;
+     }
+ 
+-    /* ? 帮助图标 - 圆形，宽高相同 */
++    /* [?] іконка довідки — кругла, однакова ширина й висота */
+     .api-help-icon-wrapper .api-help-icon {
+         display: inline-flex !important;
+         align-items: center !important;
+@@ -1380,7 +1380,7 @@ def get_custom_css():
+         box-shadow: 0 4px 15px rgba(232, 180, 184, 0.5) !important;
+     }
+ 
+-    /* Tooltip - 使用fixed定位确保在最上层 */
++    /* Tooltip — використовуйте fixed позиціонування, щоб бути на верхньому рівні */
+     .api-help-tooltip {
+         position: fixed !important;
+         width: 200px !important;
+@@ -1402,7 +1402,7 @@ def get_custom_css():
+         z-index: 2147483647 !important;
+     }
+ 
+-    /* Tooltip 小三角箭头 */
++    /* Маленька трикутна стрілка Tooltip */
+     .api-help-tooltip::after {
+         content: '' !important;
+         position: absolute !important;
+@@ -1418,7 +1418,7 @@ def get_custom_css():
+         visibility: visible !important;
+     }
+ 
+-    /* 响应式布局 */
++    /* Адаптивна верстка */
+     @media (max-width: 768px) {
+         #api-key-section {
+             flex-wrap: wrap !important;
+@@ -1681,7 +1681,7 @@ def create_footer():
+            "
+            onmouseover="this.style.color='#7eb8da'"
+            onmouseout="this.style.color='#e8b4b8'">
+-            赞助
++            Спонсорство
+         </span>
+     </div>
+     <!-- Sponsor Modal -->
+@@ -1932,16 +1932,16 @@ def create_main_interface(config, get_label=None):
+     initial_lan_mode = config.get("lan_mode", False)
+     remember_api_key = config.get("remember_api_key", False) if not initial_lan_mode else False
+ 
+-    # API Key section: [API Key] [Input Field] [记住密钥 ?]
++    # API Key section: [API Key] [Input Field] [Запам'ятати ключ ?]
+     with gr.Row(visible=initial_default_online, elem_id="api-key-section") as api_key_row:
+-        # [API Key] 标签 - 尽可能短
++        # [API Key] мітка — якомога коротше
+         gr.HTML("""
+             <div class="api-key-label-group">
+                 <span class="api-key-label" id="api-key-label-text">API Key</span>
+             </div>
+         """)
+ 
+-        # [Input Field] - 占用所有剩余空间
++        # [Input Field] — займає весь залишок простору
+         api_key_input = gr.Textbox(
+             label="",
+             placeholder=get_label("Enter your API key here"),
+@@ -1952,7 +1952,7 @@ def create_main_interface(config, get_label=None):
+             container=False
+         )
+ 
+-        # [记住密钥] - checkbox
++        # [Запам'ятати ключ] — checkbox
+         remember_key_checkbox = gr.Checkbox(
+             label=get_label("Remember Key"),
+             value=remember_api_key,
+@@ -1960,7 +1960,7 @@ def create_main_interface(config, get_label=None):
+             elem_id="remember-key-checkbox"
+         )
+ 
+-        # [?] 帮助图标 + Tooltip（带JS定位）
++        # [?] іконка довідки + Tooltip (зі статуванням JS)
+         gr.HTML("""
+             <div class="api-help-icon-wrapper" onmouseenter="positionTooltip(this)" onmouseleave="hideTooltip(this)">
+                 <span class="api-help-icon">?</span>

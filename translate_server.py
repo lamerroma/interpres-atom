@@ -833,6 +833,11 @@ def translate_pdf_bytes(content, base_name, lang_from, lang_to, stop_event):
 
     yield ("meta", {"chars": None, "pages": total_pages})
 
+    target_lang = lang_to if lang_to else "Ukrainian"
+    chunk_size = CFG.get("chunk_size", 3000)
+    token_stats = {"tok_in": 0, "tok_out": 0}
+    scanned_pages = []
+
     for page_num in range(total_pages):
         if stop_event.is_set():
             doc.close()
@@ -841,10 +846,12 @@ def translate_pdf_bytes(content, base_name, lang_from, lang_to, stop_event):
 
         page = doc[page_num]
         raw = page.get_text("dict", flags=fitz.TEXT_PRESERVE_WHITESPACE)
-        blocks = [b for b in raw["blocks"] if b["type"] == 0]
+        blocks = raw["blocks"]
 
         items = []
         for block in blocks:
+            if block["type"] != 0:
+                continue
             lines_text = []
             fontsize = 11
             color = 0
@@ -859,31 +866,46 @@ def translate_pdf_bytes(content, base_name, lang_from, lang_to, stop_event):
                 items.append((fitz.Rect(block["bbox"]), full_text, fontsize, color))
 
         pct = round((page_num + 1) / total_pages * 100)
+
         if not items:
+            has_images = any(b["type"] == 1 for b in blocks)
+            if has_images:
+                scanned_pages.append(page_num + 1)
+                yield ("log", f"Сторінка {page_num + 1}: текст не виявлено (скан) — пропущено")
             yield ("progress", f"Сторінка {page_num + 1}/{total_pages}", pct)
             continue
+
+        # Translate all blocks in batches by chunk_size (one JSON request per batch)
+        translated_texts: dict[str, str] = {}
+        current_batch: dict[str, str] = {}
+        current_chars = 0
+
+        for i, (_, text, _, _) in enumerate(items):
+            if current_chars + len(text) > chunk_size and current_batch:
+                translated_texts.update(
+                    _translate_json_segments(current_batch, target_lang, stop_event, token_stats=token_stats)
+                )
+                current_batch = {}
+                current_chars = 0
+            current_batch[str(i)] = text
+            current_chars += len(text)
+
+        if current_batch:
+            translated_texts.update(
+                _translate_json_segments(current_batch, target_lang, stop_event, token_stats=token_stats)
+            )
+
+        if stop_event.is_set():
+            doc.close()
+            yield ("stopped",)
+            return
 
         for rect, _, _, _ in items:
             page.add_redact_annot(rect, fill=(1, 1, 1))
         page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE)
 
-        for rect, text, fontsize, color_int in items:
-            if stop_event.is_set():
-                doc.close()
-                yield ("stopped",)
-                return
-
-            try:
-                translated = _translate_unit(text, lang_from, lang_to, stop_event)
-            except Exception as e:
-                doc.close()
-                yield ("error", f"Помилка перекладу: {e}")
-                return
-
-            if translated is None:
-                doc.close()
-                yield ("stopped",)
-                return
+        for i, (rect, text, fontsize, color_int) in enumerate(items):
+            translated = translated_texts.get(str(i), text)
 
             r = ((color_int >> 16) & 0xFF) / 255
             g = ((color_int >> 8) & 0xFF) / 255
@@ -912,9 +934,13 @@ def translate_pdf_bytes(content, base_name, lang_from, lang_to, stop_event):
 
         yield ("progress", f"Сторінка {page_num + 1}/{total_pages}", pct)
 
+    if scanned_pages:
+        yield ("log", f"Увага: сторінки {scanned_pages} є сканами — текст не перекладено")
+
     out = io.BytesIO()
     doc.save(out, garbage=4, deflate=True)
     doc.close()
+    yield ("stats", token_stats["tok_in"], token_stats["tok_out"])
     yield ("done",
            f"{base_name}_translated.pdf",
            "application/pdf",

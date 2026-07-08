@@ -13,7 +13,7 @@
 ### 1. Клонування репозиторію
 
 ```bash
-sudo git clone https://github.com/lamerroma/localai-translator.git /opt/interpres-atom
+sudo git clone https://github.com/lamerroma/interpres-atom.git /opt/interpres-atom
 ```
 
 ### 2. Системний користувач
