@@ -246,7 +246,8 @@ def translate_xlsx(content: bytes,
                    stop_event: threading.Event,
                    chunk_size: int = 3000,
                    insert_mode: str = "replace",
-                   separator: str = "\n") -> bytes:
+                   separator: str = "\n",
+                   progress_callback: Callable[[int, int], None] = None) -> bytes:
     """Translate an XLSX file, preserving structure.
 
     Args:
@@ -271,12 +272,30 @@ def translate_xlsx(content: bytes,
         log.info("No translatable text found in XLSX")
         return content
 
+    def count_batches(texts: List[str], max_chars: int) -> int:
+        count = 0
+        current = 0
+        has_batch = False
+        for text in texts:
+            if current + len(text) > max_chars and has_batch:
+                count += 1
+                current = 0
+                has_batch = False
+            current += len(text)
+            has_batch = True
+        if has_batch:
+            count += 1
+        return max(1, count)
+
     translated: List[str] = [""] * len(originals)
     batch_ids: Dict[str, int] = {}
     current_batch: Dict[str, str] = {}
     current_chars = 0
+    total_batches = count_batches(originals, chunk_size)
+    done_batches = 0
 
     def flush_batch():
+        nonlocal done_batches
         if not current_batch or stop_event.is_set():
             return
         result = translate_batch_fn(current_batch, lang_to, stop_event)
@@ -284,6 +303,9 @@ def translate_xlsx(content: bytes,
             idx = batch_ids.get(k)
             if idx is not None:
                 translated[idx] = v or originals[idx]
+        done_batches += 1
+        if progress_callback:
+            progress_callback(done_batches, total_batches)
 
     for i, text in enumerate(originals):
         if stop_event.is_set():

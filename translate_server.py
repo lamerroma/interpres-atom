@@ -799,6 +799,33 @@ def _translate_json_segments(batch: dict, lang_to: str,
     return batch
 
 
+def run_with_progress(worker_fn, progress_queue: _queue_mod.Queue):
+    """Run a blocking document translator while yielding queued progress events."""
+    result_box = {}
+
+    def runner():
+        try:
+            result_box["result"] = worker_fn()
+        except Exception as e:
+            result_box["error"] = e
+        finally:
+            progress_queue.put(("__done__", None))
+
+    thread = threading.Thread(target=runner, daemon=True)
+    thread.start()
+
+    while True:
+        kind, payload = progress_queue.get()
+        if kind == "__done__":
+            break
+        yield kind, payload
+
+    thread.join()
+    if "error" in result_box:
+        raise result_box["error"]
+    return result_box.get("result")
+
+
 def translate_docx_bytes(content, base_name, lang_from, lang_to, stop_event):
     """Generator. Yields ('log'|'progress'|'error'|'stopped'|'done', ...)."""
     try:
@@ -849,15 +876,17 @@ def translate_docx_bytes(content, base_name, lang_from, lang_to, stop_event):
     yield ("log", f"DOCX: ~{n_batches} запитів до моделі (режим: {insert_mode})")
 
     token_stats = {"tok_in": 0, "tok_out": 0}
-    batch_counter = [0]
+    progress_queue = _queue_mod.Queue()
 
     def translate_batch_with_progress(batch, lang, stop_ev):
-        result = _translate_json_segments(batch, lang, stop_ev, token_stats=token_stats)
-        batch_counter[0] += 1
-        return result
+        return _translate_json_segments(batch, lang, stop_ev, token_stats=token_stats)
 
-    try:
-        translated_bytes = translate_docx(
+    def on_progress(done_batches, total_batches):
+        pct = min(99, round(done_batches / max(1, total_batches) * 100))
+        progress_queue.put(("progress", (f"Запит {done_batches}/{total_batches}", pct)))
+
+    def worker():
+        return translate_docx(
             content,
             target_lang,
             translate_batch_with_progress,
@@ -865,7 +894,11 @@ def translate_docx_bytes(content, base_name, lang_from, lang_to, stop_event):
             chunk_size=chunk_size,
             insert_mode=insert_mode,
             separator=separator,
+            progress_callback=on_progress,
         )
+
+    try:
+        translated_bytes = yield from run_with_progress(worker, progress_queue)
     except Exception as e:
         if stop_event.is_set():
             yield ("stopped",)
@@ -1157,12 +1190,17 @@ def translate_pptx_bytes(content, base_name, lang_from, lang_to, stop_event):
     yield ("log", f"PPTX: ~{n_batches} запитів до моделі (режим: {insert_mode})")
 
     token_stats = {"tok_in": 0, "tok_out": 0}
+    progress_queue = _queue_mod.Queue()
 
     def translate_batch_with_progress(batch, lang, stop_ev):
         return _translate_json_segments(batch, lang, stop_ev, token_stats=token_stats)
 
-    try:
-        translated_bytes = translate_pptx(
+    def on_progress(done_batches, total_batches):
+        pct = min(99, round(done_batches / max(1, total_batches) * 100))
+        progress_queue.put(("progress", (f"Запит {done_batches}/{total_batches}", pct)))
+
+    def worker():
+        return translate_pptx(
             content,
             target_lang,
             translate_batch_with_progress,
@@ -1170,7 +1208,11 @@ def translate_pptx_bytes(content, base_name, lang_from, lang_to, stop_event):
             chunk_size=chunk_size,
             insert_mode=insert_mode,
             separator=separator,
+            progress_callback=on_progress,
         )
+
+    try:
+        translated_bytes = yield from run_with_progress(worker, progress_queue)
     except Exception as e:
         if stop_event.is_set():
             yield ("stopped",)
@@ -1236,12 +1278,17 @@ def translate_xlsx_bytes(content, base_name, lang_from, lang_to, stop_event):
     yield ("log", f"XLSX: ~{n_batches} запитів до моделі (режим: {insert_mode})")
 
     token_stats = {"tok_in": 0, "tok_out": 0}
+    progress_queue = _queue_mod.Queue()
 
     def translate_batch_with_progress(batch, lang, stop_ev):
         return _translate_json_segments(batch, lang, stop_ev, token_stats=token_stats)
 
-    try:
-        translated_bytes = translate_xlsx(
+    def on_progress(done_batches, total_batches):
+        pct = min(99, round(done_batches / max(1, total_batches) * 100))
+        progress_queue.put(("progress", (f"Запит {done_batches}/{total_batches}", pct)))
+
+    def worker():
+        return translate_xlsx(
             content,
             target_lang,
             translate_batch_with_progress,
@@ -1249,7 +1296,11 @@ def translate_xlsx_bytes(content, base_name, lang_from, lang_to, stop_event):
             chunk_size=chunk_size,
             insert_mode=insert_mode,
             separator=separator,
+            progress_callback=on_progress,
         )
+
+    try:
+        translated_bytes = yield from run_with_progress(worker, progress_queue)
     except Exception as e:
         if stop_event.is_set():
             yield ("stopped",)

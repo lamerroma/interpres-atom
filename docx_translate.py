@@ -354,6 +354,22 @@ def _apply_all_translations(doc: DocxDocument, elements: List[Dict],
     return buf.getvalue()
 
 
+def _count_batches(texts: List[str], chunk_size: int) -> int:
+    count = 0
+    current_chars = 0
+    has_batch = False
+    for text in texts:
+        if current_chars + len(text) > chunk_size and has_batch:
+            count += 1
+            current_chars = 0
+            has_batch = False
+        current_chars += len(text)
+        has_batch = True
+    if has_batch:
+        count += 1
+    return max(1, count)
+
+
 # ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
@@ -364,7 +380,8 @@ def translate_docx(content: bytes,
                    stop_event: threading.Event,
                    chunk_size: int = 3000,
                    insert_mode: str = "replace",
-                   separator: str = "\n") -> bytes:
+                   separator: str = "\n",
+                   progress_callback: Callable[[int, int], None] = None) -> bytes:
     """Translate a DOCX file, preserving all formatting.
 
     Args:
@@ -393,8 +410,11 @@ def translate_docx(content: bytes,
     batch_ids: Dict[str, int] = {}   # batch_key -> index in originals
     current_batch: Dict[str, str] = {}
     current_chars = 0
+    total_batches = _count_batches(originals, chunk_size)
+    done_batches = 0
 
     def flush_batch():
+        nonlocal done_batches
         if not current_batch or stop_event.is_set():
             return
         result = translate_batch_fn(current_batch, lang_to, stop_event)
@@ -402,6 +422,9 @@ def translate_docx(content: bytes,
             idx = batch_ids.get(k)
             if idx is not None:
                 translated[idx] = v or originals[idx]
+        done_batches += 1
+        if progress_callback:
+            progress_callback(done_batches, total_batches)
 
     for i, text in enumerate(originals):
         if stop_event.is_set():
