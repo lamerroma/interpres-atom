@@ -54,6 +54,7 @@ import requests as req_lib
 from fastapi import FastAPI, UploadFile, File, Form, Request
 from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse, Response, FileResponse
 from pydantic import BaseModel
+from starlette.background import BackgroundTask
 
 logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s %(levelname)s %(message)s')
@@ -418,7 +419,7 @@ os.makedirs(_GENERATED_DIR, exist_ok=True)
 _results: dict[str, tuple[str, str, str, float]] = {}       # file_id -> (filename, path, mime, timestamp)
 _preview_cache: dict[str, tuple[str, float]] = {}           # file_id -> (HTML preview path, timestamp)
 _result_lock = threading.Lock()
-_RESULT_TTL = 60 * 60                 # seconds to keep generated files available for download
+_RESULT_TTL = 15 * 60                 # seconds to keep generated files if not downloaded
 _RESULT_MAX_ITEMS = 50                # cap memory use if many files are translated
 _sessions: dict[str, dict] = {}          # session_id -> {"last_seen": timestamp, "ip": str}
 _session_lock = threading.Lock()
@@ -3500,6 +3501,7 @@ def download_file(file_id: str):
         media_type=mime,
         filename=filename,
         headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"},
+        background=BackgroundTask(_remove_generated_entry, file_id),
     )
 
 
