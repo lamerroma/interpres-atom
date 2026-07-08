@@ -1923,6 +1923,7 @@ function setWorking(prefix, on) {
 let _textController = null;
 let _textRequestId = null;
 let _textTokens = '';
+let _textQueueStartTime = null;
 
 async function doTranslate() {
   const inputEl = document.getElementById('input');
@@ -1934,6 +1935,7 @@ async function doTranslate() {
   setStatus('text-status', 'Перекладаю...');
   document.getElementById('result').innerHTML = '';
   _textTokens = '';
+  _textQueueStartTime = Date.now();
   _textController = new AbortController();
 
   try {
@@ -1960,8 +1962,8 @@ async function doTranslate() {
         if (!line.startsWith('data: ')) continue;
         let evt; try { evt = JSON.parse(line.slice(6)); } catch { continue; }
         if (evt.type === 'id') _textRequestId = evt.text;
-        else if (evt.type === 'queue' && evt.ahead > 0) setStatus('text-status', `У черзі: попереду ${evt.ahead}`);
-        else if (evt.type === 'queue' && evt.ahead === 0) setStatus('text-status', 'Перекладаю...');
+        else if (evt.type === 'queue' && evt.ahead > 0) setStatus('text-status', queueStatusLabel(evt.ahead, _textQueueStartTime));
+        else if (evt.type === 'queue' && evt.ahead === 0) setStatus('text-status', queueStatusLabel(0, _textQueueStartTime));
         else if (evt.type === 'token') {
           // Stream tokens into result as plain text (fast visual feedback)
           _textTokens += evt.text;
@@ -1984,6 +1986,7 @@ async function doTranslate() {
   setWorking('text', false);
   _textController = null;
   _textRequestId = null;
+  _textQueueStartTime = null;
 }
 
 function escapeHtml(text) {
@@ -2097,6 +2100,7 @@ let _fileController = null;
 let _fileRequestId = null;
 let _selectedFile = null;
 let _fileStartTime = null;
+let _fileQueueStartTime = null;
 let _previewUrl = null;
 
 function dzClick() {
@@ -2161,6 +2165,26 @@ function formatDuration(seconds) {
   return `${s} с`;
 }
 
+function formatDurationNice(seconds) {
+  seconds = Math.max(0, Math.round(seconds || 0));
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = seconds % 60;
+  if (h) return `${h} \u0433\u043e\u0434 ${m} \u0445\u0432`;
+  if (m) return `${m} \u0445\u0432${s ? ' ' + s + ' \u0441' : ''}`;
+  return `${s} \u0441`;
+}
+
+function queueStatusLabel(ahead, queueStartTime) {
+  const waited = queueStartTime ? Math.floor((Date.now() - queueStartTime) / 1000) : 0;
+  if (ahead > 0) {
+    return `\u041e\u0447\u0456\u043a\u0443\u0454 \u0432 \u0447\u0435\u0440\u0437\u0456: \u043f\u043e\u043f\u0435\u0440\u0435\u0434\u0443 ${ahead} \u00b7 \u043e\u0447\u0456\u043a\u0443\u0432\u0430\u043d\u043d\u044f ${formatDurationNice(waited)}`;
+  }
+  return waited > 2
+    ? `\u041f\u0435\u0440\u0435\u043a\u043b\u0430\u0434 \u0440\u043e\u0437\u043f\u043e\u0447\u0430\u0442\u043e \u00b7 \u043e\u0447\u0456\u043a\u0443\u0432\u0430\u043d\u043d\u044f ${formatDurationNice(waited)}`
+    : '\u041f\u0435\u0440\u0435\u043a\u043b\u0430\u0434 \u0440\u043e\u0437\u043f\u043e\u0447\u0430\u0442\u043e';
+}
+
 function showStats(data) {
   const el = document.getElementById('file-stats');
   el.classList.add('visible');
@@ -2195,7 +2219,8 @@ async function doTranslateFile() {
   fileResetResult();
   document.getElementById('file-progress-wrap').classList.add('visible');
   _fileController = new AbortController();
-  _fileStartTime = Date.now();
+  _fileStartTime = null;
+  _fileQueueStartTime = Date.now();
 
   const fd = new FormData();
   fd.append('file', _selectedFile, _selectedFile.name);
@@ -2243,7 +2268,7 @@ async function doTranslateFile() {
           const parts = [];
           if (evt.segs) parts.push(`сегментів: ${evt.segs}`);
           if (evt.batches) parts.push(`запитів: ~${evt.batches}`);
-          if (evt.est_seconds) parts.push(`час: ~${formatDuration(evt.est_seconds)}`);
+          if (evt.est_seconds) parts.push(`час: ~${formatDurationNice(evt.est_seconds)}`);
           if (parts.length) {
             const label = 'Оцінка: ' + parts.join(', ');
             setProgress(0, label);
@@ -2251,10 +2276,11 @@ async function doTranslateFile() {
           }
         }
         else if (evt.type === 'queue' && evt.ahead > 0) {
-          setProgress(0, `У черзі: попереду ${evt.ahead}`);
+          setProgress(0, queueStatusLabel(evt.ahead, _fileQueueStartTime));
         }
         else if (evt.type === 'queue' && evt.ahead === 0) {
-          setProgress(0, 'Переклад розпочато');
+          _fileStartTime = Date.now();
+          setProgress(0, queueStatusLabel(0, _fileQueueStartTime));
         }
         else if (evt.type === 'progress') {
           const pct = evt.pct || 0;
@@ -2262,7 +2288,7 @@ async function doTranslateFile() {
           if (pct > 0 && pct < 100 && _fileStartTime) {
             const elapsed = (Date.now() - _fileStartTime) / 1000;
             const remaining = elapsed * (100 - pct) / pct;
-            label += ' · залишилось ~' + formatDuration(remaining);
+            label += ' · залишилось ~' + formatDurationNice(remaining);
           }
           setProgress(pct, label);
         }
@@ -2271,7 +2297,7 @@ async function doTranslateFile() {
           statsAccum.tok_out = (evt.tok_out || 0);
         }
         else if (evt.type === 'download') {
-          const elapsed = (Date.now() - _fileStartTime) / 1000;
+          const elapsed = _fileStartTime ? (Date.now() - _fileStartTime) / 1000 : 0;
           fileLog('Переклад завершено! Тривалість ' + elapsed.toFixed(2) + ' сек.', 'log-done');
           setProgress(100, '');
           showStats({ ...statsAccum, elapsed });
@@ -2296,6 +2322,7 @@ async function doTranslateFile() {
   setWorking('file', false);
   _fileController = null;
   _fileRequestId = null;
+  _fileQueueStartTime = null;
 }
 
 function openPreview() {
