@@ -330,6 +330,44 @@ def get_stats_summary():
     return result
 
 
+def estimate_file_seconds(file_ext: str, chars: int | None = None,
+                          pages: int | None = None, batches: int | None = None) -> int | None:
+    """Estimate file translation time from recent successful jobs, with conservative fallbacks."""
+    try:
+        with _stats_conn() as conn:
+            rows = conn.execute("""
+                SELECT chars, pages, duration FROM stats
+                WHERE kind='file' AND status='success' AND file_ext=? AND duration > 0
+                ORDER BY id DESC LIMIT 20
+            """, (file_ext,)).fetchall()
+    except Exception:
+        rows = []
+
+    per_char = [
+        r["duration"] / r["chars"]
+        for r in rows
+        if chars and r["chars"] and r["duration"]
+    ]
+    if per_char:
+        return max(30, int(chars * (sum(per_char) / len(per_char))))
+
+    per_page = [
+        r["duration"] / r["pages"]
+        for r in rows
+        if pages and r["pages"] and r["duration"]
+    ]
+    if per_page:
+        return max(30, int(pages * (sum(per_page) / len(per_page))))
+
+    if batches:
+        return max(60, int(batches * 50))
+    if pages:
+        return max(60, int(pages * 90))
+    if chars:
+        return max(60, int((chars / 3000) * 50))
+    return None
+
+
 def clear_stats():
     with _stats_lock, _stats_conn() as conn:
         conn.execute("DELETE FROM stats")
@@ -769,8 +807,6 @@ def translate_docx_bytes(content, base_name, lang_from, lang_to, stop_event):
                f"(максимум {max_chars})")
         return
 
-    yield ("meta", {"chars": total_chars, "pages": None})
-
     target_lang = lang_to if lang_to else "Ukrainian"
     chunk_size  = CFG.get("chunk_size",  3000)
     insert_mode = CFG.get("insert_mode", "replace")
@@ -778,6 +814,13 @@ def translate_docx_bytes(content, base_name, lang_from, lang_to, stop_event):
 
     # Count batches for progress reporting
     n_batches = max(1, -(-total_chars // chunk_size))  # ceil division
+    yield ("meta", {
+        "segs": total_segs,
+        "chars": total_chars,
+        "pages": None,
+        "batches": n_batches,
+        "est_seconds": estimate_file_seconds("docx", chars=total_chars, batches=n_batches),
+    })
     yield ("log", f"DOCX: ~{n_batches} запитів до моделі (режим: {insert_mode})")
 
     token_stats = {"tok_in": 0, "tok_out": 0}
@@ -862,7 +905,11 @@ def translate_pdf_bytes(content, base_name, lang_from, lang_to, stop_event):
                f"(максимум {max_pages})")
         return
 
-    yield ("meta", {"chars": None, "pages": total_pages})
+    yield ("meta", {
+        "chars": None,
+        "pages": total_pages,
+        "est_seconds": estimate_file_seconds("pdf", pages=total_pages),
+    })
 
     target_lang = lang_to if lang_to else "Ukrainian"
     chunk_size = CFG.get("chunk_size", 3000)
@@ -999,8 +1046,15 @@ def translate_txt_bytes(content, base_name, lang_from, lang_to, stop_event):
 
     paragraphs = text.replace("\r\n", "\n").split("\n\n")
     total = len(paragraphs)
+    n_batches = max(1, sum(1 for para in paragraphs if para.strip()))
     yield ("log", f"TXT: {total} абзаців, {len(text)} символів")
-    yield ("meta", {"chars": len(text), "pages": None})
+    yield ("meta", {
+        "segs": total,
+        "chars": len(text),
+        "pages": None,
+        "batches": n_batches,
+        "est_seconds": estimate_file_seconds("txt", chars=len(text), batches=n_batches),
+    })
 
     translated_parts = []
     for i, para in enumerate(paragraphs, 1):
@@ -1063,13 +1117,18 @@ def translate_pptx_bytes(content, base_name, lang_from, lang_to, stop_event):
                f"(максимум {max_chars})")
         return
 
-    yield ("meta", {"chars": total_chars, "pages": None})
-
     target_lang = lang_to if lang_to else "Ukrainian"
     chunk_size  = CFG.get("chunk_size",  3000)
     insert_mode = CFG.get("insert_mode", "replace")
     separator   = CFG.get("separator",   "\n")
     n_batches   = max(1, -(-total_chars // chunk_size))
+    yield ("meta", {
+        "segs": total_segs,
+        "chars": total_chars,
+        "pages": None,
+        "batches": n_batches,
+        "est_seconds": estimate_file_seconds("pptx", chars=total_chars, batches=n_batches),
+    })
     yield ("log", f"PPTX: ~{n_batches} запитів до моделі (режим: {insert_mode})")
 
     token_stats = {"tok_in": 0, "tok_out": 0}
@@ -1137,13 +1196,18 @@ def translate_xlsx_bytes(content, base_name, lang_from, lang_to, stop_event):
                f"(максимум {max_chars})")
         return
 
-    yield ("meta", {"chars": total_chars, "pages": None})
-
     target_lang = lang_to if lang_to else "Ukrainian"
     chunk_size  = CFG.get("chunk_size",  3000)
     insert_mode = CFG.get("insert_mode", "replace")
     separator   = CFG.get("separator",   "\n")
     n_batches   = max(1, -(-total_chars // chunk_size))
+    yield ("meta", {
+        "segs": total_segs,
+        "chars": total_chars,
+        "pages": None,
+        "batches": n_batches,
+        "est_seconds": estimate_file_seconds("xlsx", chars=total_chars, batches=n_batches),
+    })
     yield ("log", f"XLSX: ~{n_batches} запитів до моделі (режим: {insert_mode})")
 
     token_stats = {"tok_in": 0, "tok_out": 0}
@@ -1685,7 +1749,6 @@ USER_HTML = r"""<!DOCTYPE html>
         <button id="btn-file-stop" class="stop" onclick="doFileStop()">Зупинити</button>
         <a id="download-link" class="download-link">↓ Завантажити</a>
         <button id="btn-preview" class="preview-btn" onclick="openPreview()">&#128065; Переглянути</button>
-        <button id="btn-file-retry" class="secondary" onclick="doTranslateFile()">↺ Перекласти знову</button>
         <span class="spinner" id="file-spinner"></span>
       </div>
     </div>
@@ -1964,7 +2027,6 @@ function fileResetResult() {
   _previewUrl = null;
   document.getElementById('download-link').classList.remove('visible');
   document.getElementById('btn-preview').classList.remove('visible');
-  document.getElementById('btn-file-retry').classList.remove('visible');
   document.getElementById('file-task-id').classList.remove('visible');
   document.getElementById('file-log-box').classList.remove('visible');
   document.getElementById('file-log-box').innerHTML = '';
@@ -1988,6 +2050,16 @@ function setProgress(pct, label) {
   document.getElementById('file-progress-label').textContent = label;
 }
 
+function formatDuration(seconds) {
+  seconds = Math.max(0, Math.round(seconds || 0));
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = seconds % 60;
+  if (h) return `${h} год ${m} хв`;
+  if (m) return `${m} хв ${s ? s + ' с' : ''}`.trim();
+  return `${s} с`;
+}
+
 function showStats(data) {
   const el = document.getElementById('file-stats');
   el.classList.add('visible');
@@ -1999,8 +2071,11 @@ function showStats(data) {
     data.tok_in >= 1000 ? (data.tok_in/1000).toFixed(1)+'K' : data.tok_in;
   if (data.tok_out !== undefined) document.getElementById('stat-tok-out').textContent =
     data.tok_out >= 1000 ? (data.tok_out/1000).toFixed(1)+'K' : data.tok_out;
+  if (data.est_seconds !== undefined && data.elapsed === undefined) {
+    document.getElementById('stat-time').textContent = '~' + formatDuration(data.est_seconds);
+  }
   if (data.elapsed !== undefined) document.getElementById('stat-time').textContent =
-    data.elapsed.toFixed(1)+'с';
+    formatDuration(data.elapsed);
 }
 
 const dropZone = document.getElementById('drop-zone');
@@ -2061,8 +2136,28 @@ async function doTranslateFile() {
           if (charsM) statsAccum.chars = parseInt(charsM[1]);
           if (batchM) statsAccum.batches = parseInt(batchM[1]);
         }
+        else if (evt.type === 'meta') {
+          Object.assign(statsAccum, evt);
+          showStats(statsAccum);
+          const parts = [];
+          if (evt.segs) parts.push(`сегментів: ${evt.segs}`);
+          if (evt.batches) parts.push(`запитів: ~${evt.batches}`);
+          if (evt.est_seconds) parts.push(`час: ~${formatDuration(evt.est_seconds)}`);
+          if (parts.length) {
+            const label = 'Оцінка: ' + parts.join(', ');
+            setProgress(0, label);
+            fileLog(label);
+          }
+        }
         else if (evt.type === 'progress') {
-          setProgress(evt.pct || 0, evt.text);
+          const pct = evt.pct || 0;
+          let label = evt.text || '';
+          if (pct > 0 && pct < 100 && _fileStartTime) {
+            const elapsed = (Date.now() - _fileStartTime) / 1000;
+            const remaining = elapsed * (100 - pct) / pct;
+            label += ' · залишилось ~' + formatDuration(remaining);
+          }
+          setProgress(pct, label);
         }
         else if (evt.type === 'stats') {
           statsAccum.tok_in = (evt.tok_in || 0);
@@ -2077,7 +2172,6 @@ async function doTranslateFile() {
           link.href = evt.url;
           link.download = evt.filename;
           link.classList.add('visible');
-          document.getElementById('btn-file-retry').classList.add('visible');
         }
         else if (evt.type === 'preview') {
           _previewUrl = evt.url;
@@ -2946,6 +3040,7 @@ async def translate_file_endpoint(
                         yield f"data: {json.dumps({'type': 'log', 'text': event[1]})}\n\n"
                     elif kind == "meta":
                         meta.update(event[1])
+                        yield f"data: {json.dumps({'type': 'meta', **event[1]})}\n\n"
                     elif kind == "progress":
                         yield f"data: {json.dumps({'type': 'progress', 'text': event[1], 'pct': event[2]})}\n\n"
                     elif kind == "stats":
