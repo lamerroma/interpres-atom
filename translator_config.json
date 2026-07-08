@@ -1,9 +1,11 @@
 {
   "base_url": "http://192.168.200.133:11434/v1",
-  "model": "gemma4:e4b",
+  "model": "rinex20/translategemma3:12b",
   "max_tokens": 2048,
   "llm_timeout": 180,
-  "chunk_size": 3000,
+  "chunk_size": 2500,
+  "temperature": 0.1,
+  "retry": 2,
   "system_msg": "Ти — професійний перекладач. Перекладай текст точно, зберігаючи оригінальний сенс, часи дієслів та числівники. Уникай зайвої поетизації та художніх вигадок, якщо це змінює фактичні дані (наприклад, дати або цифри).\"",
   "prompt_template": "Translate the following {context} {direction}. Keep all ⟨P⟩ and ⟨N⟩ markers exactly in place. Preserve technical terms, proper nouns, and numbers exactly. Output ONLY the translation.\n\n{text}"
 }

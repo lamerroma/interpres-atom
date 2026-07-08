@@ -69,7 +69,7 @@ DEFAULTS = {
     "max_tokens":      2048,
     "llm_timeout":     180,
     "chunk_size":      3000,
-    "temperature":     0.2,
+    "temperature":     0.1,
     "retry":           2,
     "insert_mode":     "replace",
     "separator":       "\n",
@@ -182,6 +182,11 @@ CFG = load_config()
 
 def public_config(cfg: dict) -> dict:
     return {k: v for k, v in cfg.items() if k not in SENSITIVE_CONFIG_KEYS}
+
+
+def translation_anchor(lang_to: str) -> str:
+    target = (lang_to or "Ukrainian").strip() or "Ukrainian"
+    return f"To {target}:"
 
 # ── Stats DB ─────────────────────────────────────────────────────────────────
 
@@ -505,12 +510,8 @@ def _translate_unit(text: str, lang_from: str, lang_to: str,
     # Use /api/chat so Ollama applies the model's baked-in chat template
     # (Open WebUI does the same; /api/generate skips the template and the
     # model was trained to expect it).
-    target = lang_to if lang_to else "Ukrainian"
-    # Natural-language instruction matches what works for users in Open WebUI;
-    # the model card's "To <Lang>:" anchor turned out to give worse term
-    # choices than a plain "Translate to <Lang>" prompt.
-    content = f"Translate to {target}:\n\n{text}"
-    temperature = float(CFG.get("temperature", 0.2))
+    content = f"{translation_anchor(lang_to)}\n\n{text}"
+    temperature = float(CFG.get("temperature", 0.1))
     try:
         resp = req_lib.post(
             f"{_ollama_native_host()}/api/chat",
@@ -598,9 +599,8 @@ def _translate_unit_streaming(text: str, lang_from: str, lang_to: str,
     if stop_event.is_set():
         return
 
-    target = lang_to if lang_to else "Ukrainian"
-    content = f"Translate to {target}:\n\n{text}"
-    temperature = float(CFG.get("temperature", 0.2))
+    content = f"{translation_anchor(lang_to)}\n\n{text}"
+    temperature = float(CFG.get("temperature", 0.1))
 
     try:
         resp = req_lib.post(
@@ -661,7 +661,7 @@ def _translate_json_segments(batch: dict, lang_to: str,
     json_input = json.dumps(batch, ensure_ascii=False)
     custom_prompt = CFG.get("custom_prompt", "").strip()
     base_instruction = (
-        f"Translate each JSON value into {lang_to}. "
+        "Translate each JSON value. "
         "Return ONLY a valid JSON object with exactly the same keys and translated values. "
         "Do not add commentary."
     )
@@ -669,10 +669,10 @@ def _translate_json_segments(batch: dict, lang_to: str,
         instruction = f"{custom_prompt}\n{base_instruction}"
     else:
         instruction = base_instruction
-    prompt = f"{instruction}\n\n{json_input}"
+    prompt = f"{translation_anchor(lang_to)}\n{instruction}\n\n{json_input}"
 
     max_retries = max(1, int(CFG.get("retry", 2)))
-    temperature = float(CFG.get("temperature", 0.2))
+    temperature = float(CFG.get("temperature", 0.1))
 
     for attempt in range(max_retries):
         if stop_event.is_set():
@@ -2368,6 +2368,10 @@ ADMIN_HTML = r"""<!DOCTYPE html>
             <label>Кастомна інструкція перекладу (необов'язково)</label>
             <textarea id="cfg_custom_prompt" placeholder="Наприклад: Зберігай технічні терміни без перекладу."></textarea>
           </div>
+          <div class="full">
+            <button type="button" onclick="applyTranslateGemmaProfile()" style="background:#7c3aed;">Профіль TranslateGemma</button>
+            <span class="status">rinex20/translategemma3:12b · temperature 0.1 · chunk 2500</span>
+          </div>
         </div>
       </div>
     </div>
@@ -2464,12 +2468,23 @@ function applyCfg(cfg) {
   document.getElementById('cfg_chunk_size').value    = cfg.chunk_size    ?? 3000;
   document.getElementById('cfg_max_pdf_pages').value = cfg.max_pdf_pages ?? 10;
   document.getElementById('cfg_max_chars').value     = cfg.max_chars     ?? 30000;
-  document.getElementById('cfg_temperature').value   = cfg.temperature   ?? 0.2;
+  document.getElementById('cfg_temperature').value   = cfg.temperature   ?? 0.1;
   document.getElementById('cfg_retry').value         = cfg.retry         ?? 2;
   document.getElementById('cfg_insert_mode').value   = cfg.insert_mode   ?? 'replace';
   document.getElementById('cfg_separator').value     = cfg.separator     ?? '\n';
   document.getElementById('cfg_custom_prompt').value = cfg.custom_prompt ?? '';
   toggleSeparator();
+}
+
+function applyTranslateGemmaProfile() {
+  document.getElementById('cfg_model').value = 'rinex20/translategemma3:12b';
+  document.getElementById('cfg_temperature').value = 0.1;
+  document.getElementById('cfg_chunk_size').value = 2500;
+  document.getElementById('cfg_max_tokens').value = 2048;
+  document.getElementById('cfg_retry').value = 2;
+  const st = document.getElementById('cfg-status');
+  st.textContent = 'Профіль TranslateGemma застосовано. Натисніть "Зберегти".';
+  st.className = 'status ok';
 }
 
 async function loadSettings() {
