@@ -49,6 +49,12 @@ journalctl -u interpres-atom-beta.service -n 100 --no-pager
 Both `7860` and `7861` must respond. The production service does not need to
 be restarted when the beta service is installed or updated.
 
+Run the automated tests before restarting beta:
+
+```bash
+.venv-beta/bin/python -m unittest discover -v
+```
+
 ## Beta update
 
 ```bash
