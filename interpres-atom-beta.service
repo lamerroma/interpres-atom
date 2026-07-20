@@ -1,0 +1,17 @@
+[Unit]
+Description=Interpres-Atom Beta Translation Server
+After=network-online.target ollama.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=coyotl
+WorkingDirectory=/opt/interpres-atom-beta
+Environment=INTERPRES_HOST=0.0.0.0
+Environment=INTERPRES_PORT=7861
+ExecStart=/opt/interpres-atom-beta/.venv-beta/bin/python /opt/interpres-atom-beta/translate_server.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -80,8 +80,8 @@ DEFAULTS = {
     "max_chars":       30000,
 }
 
-HOST = "0.0.0.0"
-PORT = 7860
+HOST = os.environ.get("INTERPRES_HOST", "0.0.0.0")
+PORT = int(os.environ.get("INTERPRES_PORT", "7860"))
 
 LANG_NAMES_UK = {
     "Arabic":     "Арабська",
