@@ -13,6 +13,9 @@ Run on the server:
 
 ```bash
 cd /opt/interpres-atom-beta
+git remote add beta-origin https://github.com/lamerroma/interpres-atom.git
+git fetch beta-origin develop-from-v1.22
+git switch -c develop-from-v1.22 --track beta-origin/develop-from-v1.22
 python3 -m venv .venv-beta
 .venv-beta/bin/pip install --upgrade pip
 .venv-beta/bin/pip install -r requirements.txt
@@ -50,7 +53,7 @@ be restarted when the beta service is installed or updated.
 
 ```bash
 cd /opt/interpres-atom-beta
-git pull --ff-only
+git pull --ff-only beta-origin develop-from-v1.22
 .venv-beta/bin/pip install -r requirements.txt
 sudo systemctl restart interpres-atom-beta.service
 sudo systemctl status interpres-atom-beta.service
