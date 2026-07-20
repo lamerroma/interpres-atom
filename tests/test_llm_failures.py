@@ -166,6 +166,13 @@ class LlmFailureTests(unittest.TestCase):
         self.assertTrue(any(event[0] == "error" for event in events))
         self.assertFalse(any(event[0] == "done" for event in events))
 
+    def test_version_is_rendered_on_user_and_admin_pages(self):
+        version_label = f"Interpres-Atom v{server.APP_VERSION}"
+        self.assertIn(version_label, server.USER_HTML)
+        self.assertIn(version_label, server.ADMIN_HTML)
+        self.assertNotIn("__APP_VERSION__", server.USER_HTML)
+        self.assertNotIn("__APP_VERSION__", server.ADMIN_HTML)
+
 
 if __name__ == "__main__":
     unittest.main()

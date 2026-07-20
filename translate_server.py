@@ -82,6 +82,7 @@ DEFAULTS = {
 
 HOST = os.environ.get("INTERPRES_HOST", "0.0.0.0")
 PORT = int(os.environ.get("INTERPRES_PORT", "7860"))
+APP_VERSION = "1.22.1-beta.1"
 
 LANG_NAMES_UK = {
     "Arabic":     "Арабська",
@@ -1689,7 +1690,7 @@ USER_HTML = r"""<!DOCTYPE html>
   <div class="footer">
     <a href="/admin">Адміністрування</a>
     <span style="margin: 0 12px; color: var(--border);">|</span>
-    <span>v1.22</span>
+    <span>Interpres-Atom v__APP_VERSION__</span>
   </div>
 </div>
 
@@ -2164,7 +2165,7 @@ document.getElementById('input').addEventListener('keydown', e => {
 });
 </script>
 </body>
-</html>"""
+</html>""".replace("__APP_VERSION__", APP_VERSION)
 
 
 ADMIN_HTML = r"""<!DOCTYPE html>
@@ -2196,6 +2197,7 @@ ADMIN_HTML = r"""<!DOCTYPE html>
   .settings-grid .full { grid-column: 1 / -1; }
   .back-link { display: inline-block; margin-bottom: 16px; font-size: .9rem; color: #2563eb; text-decoration: none; }
   .back-link:hover { text-decoration: underline; }
+  .footer { margin-top: 24px; text-align: center; color: #6b7280; font-size: .8rem; }
   .settings-section { border: 1px solid #e5e7eb; border-radius: 8px; margin-top: 16px; overflow: hidden; }
   .settings-section-header { background: #f9fafb; padding: 10px 14px; font-size: .85rem; font-weight: 600; color: #374151; text-transform: uppercase; letter-spacing: .04em; border-bottom: 1px solid #e5e7eb; }
   .settings-section-body { padding: 14px; }
@@ -2363,6 +2365,8 @@ ADMIN_HTML = r"""<!DOCTYPE html>
   </details>
 </div>
 
+<div class="footer">Interpres-Atom v__APP_VERSION__</div>
+
 <script>
 function toggleSeparator() {
   const mode = document.getElementById('cfg_insert_mode').value;
@@ -2479,7 +2483,7 @@ document.getElementById('stats-details').addEventListener('toggle', e => {
 loadSettings();
 </script>
 </body>
-</html>"""
+</html>""".replace("__APP_VERSION__", APP_VERSION)
 
 
 class TranslateRequest(BaseModel):
