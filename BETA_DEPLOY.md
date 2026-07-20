@@ -41,8 +41,8 @@ The beta interface is available at `http://SERVER_IP:7861`.
 ## Checks
 
 ```bash
-curl -I http://127.0.0.1:7860/
-curl -I http://127.0.0.1:7861/
+curl -fsS http://127.0.0.1:7860/limits
+curl -fsS http://127.0.0.1:7861/limits
 journalctl -u interpres-atom-beta.service -n 100 --no-pager
 ```
 

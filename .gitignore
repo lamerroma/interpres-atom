@@ -2,5 +2,6 @@ __pycache__/
 *.pyc
 .claude/
 *.db
+.venv-beta/
 server-working-copy/
 translate_server – копія.txt
