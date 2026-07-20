@@ -3,5 +3,6 @@ __pycache__/
 .claude/
 *.db
 .venv-beta/
+.venv-dev/
 server-working-copy/
 translate_server – копія.txt

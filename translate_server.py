@@ -177,6 +177,17 @@ def save_config(cfg: dict) -> None:
 
 CFG = load_config()
 
+
+class TranslationError(RuntimeError):
+    """Raised when the translation backend cannot produce a valid result."""
+
+
+def _retry_count() -> int:
+    try:
+        return max(1, int(CFG.get("retry", 2)))
+    except (TypeError, ValueError):
+        return 2
+
 # ── Stats DB ─────────────────────────────────────────────────────────────────
 
 STATS_DB = os.path.join(os.path.dirname(__file__), "stats.db")
@@ -483,28 +494,42 @@ def _translate_unit(text: str, lang_from: str, lang_to: str,
     # the model card's "To <Lang>:" anchor turned out to give worse term
     # choices than a plain "Translate to <Lang>" prompt.
     content = f"Translate to {target}:\n\n{text}"
-    try:
-        resp = req_lib.post(
-            f"{_ollama_native_host()}/api/chat",
-            json={
-                "model": CFG["model"],
-                "messages": [{"role": "user", "content": content}],
-                "stream": False,
-            },
-            timeout=CFG["llm_timeout"],
-        )
+    last_error = "невідома помилка"
+    attempts = _retry_count()
+    for attempt in range(attempts):
         if stop_event.is_set():
             return None
-        if resp.status_code != 200:
-            log.warning(f"Ollama returned {resp.status_code}: {resp.text[:200]}")
-            return text
-        data = resp.json()
-        return (data.get("message", {}).get("content") or "").strip() or text
-    except req_lib.exceptions.Timeout:
-        raise
-    except Exception as e:
-        log.warning(f"_translate_unit failed: {e}")
-        return text
+        try:
+            resp = req_lib.post(
+                f"{_ollama_native_host()}/api/chat",
+                json={
+                    "model": CFG["model"],
+                    "messages": [{"role": "user", "content": content}],
+                    "stream": False,
+                },
+                timeout=CFG["llm_timeout"],
+            )
+            if stop_event.is_set():
+                return None
+            if resp.status_code != 200:
+                last_error = f"Ollama повернула HTTP {resp.status_code}"
+                log.warning(f"{last_error} (attempt {attempt + 1}/{attempts}): {resp.text[:200]}")
+                continue
+            data = resp.json()
+            translated = (data.get("message", {}).get("content") or "").strip()
+            if not translated:
+                last_error = "Ollama повернула порожню відповідь"
+                log.warning(f"{last_error} (attempt {attempt + 1}/{attempts})")
+                continue
+            return translated
+        except req_lib.exceptions.Timeout:
+            last_error = f"тайм-аут Ollama після {CFG['llm_timeout']} с"
+            log.warning(f"{last_error} (attempt {attempt + 1}/{attempts})")
+        except Exception as e:
+            last_error = f"помилка з'єднання з Ollama: {e}"
+            log.warning(f"_translate_unit {last_error} (attempt {attempt + 1}/{attempts})")
+
+    raise TranslationError(f"Переклад не виконано: {last_error}")
 
 
 def _parse_html_to_parts(html: str):
@@ -572,42 +597,62 @@ def _translate_unit_streaming(text: str, lang_from: str, lang_to: str,
     target = lang_to if lang_to else "Ukrainian"
     content = f"Translate to {target}:\n\n{text}"
 
-    try:
-        resp = req_lib.post(
-            f"{_ollama_native_host()}/api/chat",
-            json={
-                "model": CFG["model"],
-                "messages": [{"role": "user", "content": content}],
-                "stream": True,
-            },
-            timeout=CFG["llm_timeout"],
-            stream=True,
-        )
-        if resp.status_code != 200:
-            log.warning(f"Ollama stream returned {resp.status_code}")
-            yield text
-            return
+    last_error = "невідома помилка"
+    attempts = _retry_count()
+    for attempt in range(attempts):
+        emitted = False
+        done_received = False
+        try:
+            resp = req_lib.post(
+                f"{_ollama_native_host()}/api/chat",
+                json={
+                    "model": CFG["model"],
+                    "messages": [{"role": "user", "content": content}],
+                    "stream": True,
+                },
+                timeout=CFG["llm_timeout"],
+                stream=True,
+            )
+            if resp.status_code != 200:
+                last_error = f"Ollama повернула HTTP {resp.status_code}"
+                log.warning(f"{last_error} (attempt {attempt + 1}/{attempts})")
+                continue
 
-        for raw_line in resp.iter_lines():
-            if stop_event.is_set():
-                resp.close()
+            for raw_line in resp.iter_lines():
+                if stop_event.is_set():
+                    resp.close()
+                    return
+                if not raw_line:
+                    continue
+                line = raw_line.decode("utf-8") if isinstance(raw_line, bytes) else raw_line
+                try:
+                    data = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if data.get("done") is True:
+                    done_received = True
+                token = data.get("message", {}).get("content", "")
+                if token:
+                    emitted = True
+                    yield token
+            if emitted and done_received:
                 return
-            if not raw_line:
-                continue
-            line = raw_line.decode("utf-8") if isinstance(raw_line, bytes) else raw_line
-            try:
-                data = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            token = data.get("message", {}).get("content", "")
-            if token:
-                yield token
+            if emitted:
+                raise TranslationError("Потік перекладу обірвався до завершення")
+            last_error = "Ollama повернула порожню потокову відповідь"
+        except req_lib.exceptions.Timeout:
+            last_error = f"тайм-аут Ollama після {CFG['llm_timeout']} с"
+            if emitted:
+                raise TranslationError(f"Потік перекладу перервано: {last_error}")
+        except TranslationError:
+            raise
+        except Exception as e:
+            last_error = f"помилка з'єднання з Ollama: {e}"
+            if emitted:
+                raise TranslationError(f"Потік перекладу перервано: {last_error}")
+        log.warning(f"_translate_unit_streaming {last_error} (attempt {attempt + 1}/{attempts})")
 
-    except req_lib.exceptions.Timeout:
-        raise
-    except Exception as e:
-        log.warning(f"_translate_unit_streaming failed: {e}")
-        yield text
+    raise TranslationError(f"Переклад не виконано: {last_error}")
 
 
 # ── DOCX translation — see docx_translate.py ─────────────────────────────────
@@ -640,7 +685,7 @@ def _translate_json_segments(batch: dict, lang_to: str,
         instruction = base_instruction
     prompt = f"{instruction}\n\n{json_input}"
 
-    max_retries = max(1, int(CFG.get("retry", 2)))
+    max_retries = _retry_count()
     temperature = float(CFG.get("temperature", 0.7))
 
     for attempt in range(max_retries):
@@ -687,22 +732,28 @@ def _translate_json_segments(batch: dict, lang_to: str,
                 result = {str(item["id"]): item.get("t", "") for item in parsed
                           if isinstance(item, dict) and "id" in item}
             elif isinstance(parsed, dict):
-                result = {str(k): str(v) for k, v in parsed.items()}
+                result = {str(k): v for k, v in parsed.items()}
             else:
                 log.warning(f"_translate_json_segments unexpected type {type(parsed)} (attempt {attempt+1})")
                 continue
 
-            # Fill in any missing keys with original text
-            for k in batch:
-                if k not in result or not result[k].strip():
-                    result[k] = batch[k]
+            missing = [k for k in batch
+                       if k not in result or not isinstance(result[k], str) or not result[k].strip()]
+            if missing:
+                log.warning(
+                    f"_translate_json_segments missing/empty keys {missing} "
+                    f"(attempt {attempt + 1})"
+                )
+                continue
             return result
 
         except Exception as e:
             log.warning(f"_translate_json_segments attempt {attempt+1} failed: {e}")
 
-    log.warning("_translate_json_segments all retries exhausted, returning originals")
-    return batch
+    raise TranslationError(
+        f"Переклад документа не виконано: модель не повернула коректний JSON "
+        f"після {max_retries} спроб"
+    )
 
 
 def translate_docx_bytes(content, base_name, lang_from, lang_to, stop_event):
@@ -2606,6 +2657,11 @@ def translate(req: TranslateRequest, request: Request):
                 yield f"data: {json.dumps({'type': 'token', 'text': translated})}\n\n"
                 yield f"data: {json.dumps({'type': 'result', 'text': translated})}\n\n"
 
+            except TranslationError as e:
+                final_error = str(e)
+                log.warning(f"Translation failed: {e}")
+                yield log_event(f"[{ts()}] ERROR: {e}")
+                yield f"data: {json.dumps({'type': 'error', 'text': str(e)})}\n\n"
             except req_lib.exceptions.Timeout:
                 final_error = "Timeout"
                 log.error(f"Translation timeout after {CFG['llm_timeout']}s")
@@ -2727,6 +2783,10 @@ def translate_html(req: TranslateHtmlRequest, request: Request):
                 # Send Markdown — frontend renders it via marked.js (like OpenWebUI)
                 yield f"data: {json.dumps({'type': 'result', 'text': translated_md, 'format': 'markdown'})}\n\n"
 
+            except TranslationError as e:
+                final_error = str(e)
+                log.warning(f"HTML translation failed: {e}")
+                yield f"data: {json.dumps({'type': 'error', 'text': str(e)})}\n\n"
             except req_lib.exceptions.Timeout:
                 final_error = "Timeout"
                 yield f"data: {json.dumps({'type': 'error', 'text': 'Сервер не встиг відповісти.'})}\n\n"
