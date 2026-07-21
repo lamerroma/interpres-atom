@@ -14,6 +14,7 @@ import base64
 import time
 import subprocess
 from contextlib import contextmanager
+from dataclasses import dataclass, field
 from urllib.parse import quote
 
 # ── Dependency check ─────────────────────────────────────────────────────────
@@ -86,7 +87,7 @@ DEFAULTS = {
 
 HOST = os.environ.get("INTERPRES_HOST", "0.0.0.0")
 PORT = int(os.environ.get("INTERPRES_PORT", "7860"))
-APP_VERSION = "1.22.1"
+APP_VERSION = "1.22.2-beta.1"
 
 LANG_NAMES_UK = {
     "Arabic":     "Арабська",
@@ -399,7 +400,34 @@ async def basic_auth(request: Request, call_next):
     )
 
 
-_active: dict[str, threading.Event] = {}
+@dataclass
+class _ActiveJob:
+    stop_event: threading.Event
+    start_event: threading.Event | None = None
+    done_event: threading.Event | None = None
+    execution_started: bool = False
+    state_lock: threading.Lock = field(default_factory=threading.Lock)
+
+    def cancel(self) -> bool:
+        """Cancel and release the queue slot when model execution has not begun."""
+        with self.state_lock:
+            self.stop_event.set()
+            if self.done_event is not None and not self.execution_started:
+                self.done_event.set()
+                return True
+            return False
+
+    def begin_execution(self) -> bool:
+        with self.state_lock:
+            if self.stop_event.is_set():
+                if self.done_event is not None:
+                    self.done_event.set()
+                return False
+            self.execution_started = True
+            return True
+
+
+_active: dict[str, _ActiveJob] = {}
 _results: dict[str, tuple[str, bytes]] = {}
 _preview_cache: dict[str, bytes] = {}   # file_id -> HTML bytes from mammoth
 _sessions: dict[str, tuple[float, str]] = {}  # session_id -> (last_seen, client_ip)
@@ -415,11 +443,16 @@ _ticket_serving = 0
 def _queue_worker():
     global _ticket_serving
     while True:
-        start_evt, done_evt = _job_queue.get()
+        job = _job_queue.get()
         with _ticket_lock:
             _ticket_serving += 1
-        start_evt.set()
-        done_evt.wait()
+        if job.start_event is None or job.done_event is None:
+            continue
+        job.start_event.set()
+        if job.stop_event.is_set():
+            job.done_event.set()
+            continue
+        job.done_event.wait()
 
 
 threading.Thread(target=_queue_worker, daemon=True).start()
@@ -1942,19 +1975,22 @@ async function doTranslate() {
   setStatus('text-status', 'Перекладаю...');
   document.getElementById('result').innerHTML = '';
   _textTokens = '';
-  _textController = new AbortController();
+  _textRequestId = null;
+  const controller = new AbortController();
+  _textController = controller;
 
   try {
     const resp = await fetch('/translate-html', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      signal: _textController.signal,
+      signal: controller.signal,
       body: JSON.stringify({
         html,
         lang_from: document.getElementById('lang_from').value,
         lang_to: document.getElementById('lang_to').value,
       }),
     });
+    _textRequestId = resp.headers.get('X-Request-ID') || _textRequestId;
     const reader = resp.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
@@ -1989,9 +2025,11 @@ async function doTranslate() {
   } catch (e) {
     if (e.name !== 'AbortError') setStatus('text-status', 'Помилка з\'єднання', 'error');
   }
-  setWorking('text', false);
-  _textController = null;
-  _textRequestId = null;
+  if (_textController === controller) {
+    setWorking('text', false);
+    _textController = null;
+    _textRequestId = null;
+  }
 }
 
 function showResult(text, format) {
@@ -2017,11 +2055,17 @@ function clearInput() {
 }
 
 async function doStop() {
-  if (_textController) { _textController.abort(); _textController = null; }
-  if (_textRequestId) {
-    await fetch('/stop/' + _textRequestId, {method: 'POST'}).catch(() => {});
-    _textRequestId = null;
+  const controller = _textController;
+  for (let attempt = 0; attempt < 10 && !_textRequestId && controller; attempt++) {
+    await new Promise(resolve => setTimeout(resolve, 50));
   }
+  const requestId = _textRequestId;
+  if (requestId) {
+    await fetch('/stop/' + requestId, {method: 'POST'}).catch(() => {});
+  }
+  if (controller) controller.abort();
+  _textController = null;
+  _textRequestId = null;
   setStatus('text-status', 'Зупинено');
   setWorking('text', false);
 }
@@ -3322,9 +3366,11 @@ def post_config(data: ConfigUpdate):
 
 @app.post("/stop/{request_id}")
 def stop_translation(request_id: str):
-    event = _active.get(request_id)
-    if event:
-        event.set()
+    job = _active.get(request_id)
+    if job:
+        released = job.cancel()
+        if released:
+            _active.pop(request_id, None)
     return JSONResponse({"ok": True})
 
 
@@ -3333,15 +3379,16 @@ def translate(req: TranslateRequest, request: Request):
     global _ticket_issued
     request_id = str(uuid.uuid4())
     stop_event = threading.Event()
-    _active[request_id] = stop_event
     client_ip = request.client.host if request.client else None
 
     start_evt = threading.Event()
     done_evt = threading.Event()
+    job = _ActiveJob(stop_event, start_evt, done_evt)
+    _active[request_id] = job
     with _ticket_lock:
         _ticket_issued += 1
         my_ticket = _ticket_issued
-    _job_queue.put((start_evt, done_evt))
+    _job_queue.put(job)
 
     def generate():
         def log_event(msg: str):
@@ -3389,6 +3436,11 @@ def translate(req: TranslateRequest, request: Request):
             yield log_event(f"[{ts()}] Text:  {len(req.text)} chars")
 
             try:
+                if not job.begin_execution():
+                    final_status = "stopped"
+                    yield f"data: {json.dumps({'type': 'done'})}\n\n"
+                    return
+
                 # Single LLM call with whole text — preserves cross-paragraph
                 # context (terminology, document domain). The model keeps the
                 # paragraph breaks naturally in its output.
@@ -3441,7 +3493,11 @@ def translate(req: TranslateRequest, request: Request):
                 error=final_error,
             )
 
-    return StreamingResponse(generate(), media_type="text/event-stream")
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"X-Request-ID": request_id},
+    )
 
 
 @app.post("/translate-html")
@@ -3450,15 +3506,16 @@ def translate_html(req: TranslateHtmlRequest, request: Request):
     global _ticket_issued
     request_id = str(uuid.uuid4())
     stop_event = threading.Event()
-    _active[request_id] = stop_event
     client_ip = request.client.host if request.client else None
 
     start_evt = threading.Event()
     done_evt = threading.Event()
+    job = _ActiveJob(stop_event, start_evt, done_evt)
+    _active[request_id] = job
     with _ticket_lock:
         _ticket_issued += 1
         my_ticket = _ticket_issued
-    _job_queue.put((start_evt, done_evt))
+    _job_queue.put(job)
 
     def generate():
         def log_event(msg):
@@ -3482,6 +3539,7 @@ def translate_html(req: TranslateHtmlRequest, request: Request):
 
             while not start_evt.wait(timeout=2):
                 if stop_event.is_set():
+                    final_status = "stopped"
                     yield f"data: {json.dumps({'type': 'done'})}\n\n"
                     return
                 with _ticket_lock:
@@ -3508,6 +3566,11 @@ def translate_html(req: TranslateHtmlRequest, request: Request):
                     return
 
                 yield log_event(f"[{ts()}] Markdown: {len(markdown_text)} chars")
+
+                if not job.begin_execution():
+                    final_status = "stopped"
+                    yield f"data: {json.dumps({'type': 'done'})}\n\n"
+                    return
 
                 # Stream translation of Markdown — model preserves ** ## - naturally
                 translated_md = ""
@@ -3556,7 +3619,11 @@ def translate_html(req: TranslateHtmlRequest, request: Request):
                 status=final_status, error=final_error,
             )
 
-    return StreamingResponse(generate(), media_type="text/event-stream")
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"X-Request-ID": request_id},
+    )
 
 
 async def _read_upload_limited(file: UploadFile, max_bytes: int) -> bytes | None:
@@ -3604,7 +3671,7 @@ async def translate_file_endpoint(
 
     request_id = str(uuid.uuid4())
     stop_event = threading.Event()
-    _active[request_id] = stop_event
+    _active[request_id] = _ActiveJob(stop_event)
 
     def generate():
         def ts():

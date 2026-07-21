@@ -4,6 +4,7 @@ import io
 import json
 import os
 import tempfile
+import threading
 import time
 import unittest
 import subprocess
@@ -36,6 +37,37 @@ def valid_config(**overrides):
 
 
 class AdminPageTests(unittest.TestCase):
+    def test_cancelled_queued_job_releases_queue_slot(self):
+        job = server._ActiveJob(
+            threading.Event(), threading.Event(), threading.Event()
+        )
+
+        self.assertTrue(job.cancel())
+        self.assertTrue(job.stop_event.is_set())
+        self.assertTrue(job.done_event.is_set())
+        self.assertFalse(job.begin_execution())
+
+    def test_cancelled_running_job_waits_for_generator_cleanup(self):
+        job = server._ActiveJob(
+            threading.Event(), threading.Event(), threading.Event()
+        )
+
+        self.assertTrue(job.begin_execution())
+        self.assertFalse(job.cancel())
+        self.assertTrue(job.stop_event.is_set())
+        self.assertFalse(job.done_event.is_set())
+
+    def test_text_stop_reaches_server_before_stream_is_aborted(self):
+        self.assertIn("resp.headers.get('X-Request-ID')", server.USER_HTML)
+        self.assertIn("if (_textController === controller)", server.USER_HTML)
+        stop_function = server.USER_HTML.split(
+            "async function doStop() {", 1
+        )[1].split("//", 1)[0]
+        self.assertLess(
+            stop_function.index("fetch('/stop/'"),
+            stop_function.index("controller.abort()"),
+        )
+
     def test_translation_defaults_use_primary_model_settings(self):
         self.assertEqual(server.DEFAULTS["model"], "rinex20/translategemma3:12b")
         self.assertEqual(server.DEFAULTS["max_tokens"], 4096)
