@@ -1,4 +1,6 @@
 import re
+import asyncio
+import io
 import json
 import os
 import tempfile
@@ -7,7 +9,7 @@ import unittest
 import subprocess
 from unittest.mock import Mock, patch
 
-from fastapi import Request
+from fastapi import Request, UploadFile
 from pydantic import ValidationError
 
 import translate_server as server
@@ -22,6 +24,7 @@ def valid_config(**overrides):
         "chunk_size": 3000,
         "max_pdf_pages": 10,
         "max_chars": 30000,
+        "max_upload_mb": 50,
         "temperature": 0.7,
         "retry": 2,
         "insert_mode": "replace",
@@ -37,6 +40,7 @@ class AdminPageTests(unittest.TestCase):
         self.assertEqual(server.DEFAULTS["model"], "rinex20/translategemma3:12b")
         self.assertEqual(server.DEFAULTS["max_tokens"], 4096)
         self.assertEqual(server.DEFAULTS["temperature"], 0.1)
+        self.assertEqual(server.DEFAULTS["max_upload_mb"], 50)
         self.assertIn("cfg.max_tokens    ?? 4096", server.ADMIN_HTML)
         self.assertIn("cfg.temperature   ?? 0.1", server.ADMIN_HTML)
 
@@ -50,6 +54,7 @@ class AdminPageTests(unittest.TestCase):
             ("retry", None),
             ("temperature", 3),
             ("max_pdf_pages", 0),
+            ("max_upload_mb", 0),
         ):
             with self.subTest(field=field, value=value):
                 with self.assertRaises(ValidationError):
@@ -76,10 +81,23 @@ class AdminPageTests(unittest.TestCase):
         for element_id in (
             "cfg_base_url", "cfg_model", "cfg_max_tokens", "cfg_llm_timeout",
             "cfg_chunk_size", "cfg_max_pdf_pages", "cfg_max_chars",
+            "cfg_max_upload_mb",
             "cfg_temperature", "cfg_retry",
         ):
             pattern = rf'<input[^>]*id="{element_id}"[^>]*required'
             self.assertRegex(server.ADMIN_HTML, pattern)
+
+    def test_upload_reader_stops_at_configured_limit(self):
+        accepted = UploadFile(file=io.BytesIO(b"1234"), filename="small.txt")
+        rejected = UploadFile(file=io.BytesIO(b"12345"), filename="large.txt")
+
+        self.assertEqual(
+            asyncio.run(server._read_upload_limited(accepted, 4)),
+            b"1234",
+        )
+        self.assertIsNone(
+            asyncio.run(server._read_upload_limited(rejected, 4)),
+        )
 
     @patch.object(server.req_lib, "get")
     def test_admin_status_reports_ollama_and_model(self, get):

@@ -81,11 +81,12 @@ DEFAULTS = {
     "auth_pass":       "translate",
     "max_pdf_pages":   10,
     "max_chars":       30000,
+    "max_upload_mb":   50,
 }
 
 HOST = os.environ.get("INTERPRES_HOST", "0.0.0.0")
 PORT = int(os.environ.get("INTERPRES_PORT", "7860"))
-APP_VERSION = "1.22.1-beta.9"
+APP_VERSION = "1.22.1-beta.10"
 
 LANG_NAMES_UK = {
     "Arabic":     "Арабська",
@@ -1736,6 +1737,7 @@ USER_HTML = r"""<!DOCTYPE html>
         <ul>
           <li>PDF — максимум <strong><span id="help-limit-pages">10</span> сторінок</strong> за один запит.</li>
           <li>Текст / файли — максимум <strong><span id="help-limit-chars">30 000</span> символів</strong>.</li>
+          <li>Розмір завантаження — максимум <strong><span id="help-limit-upload">50</span> MB</strong>.</li>
         </ul>
       </div>
       <div class="help-section">
@@ -2036,6 +2038,15 @@ function dzClick() {
 }
 
 function fileSelected(f) {
+  const maxUploadMb = _cfg ? (_cfg.max_upload_mb ?? 50) : 50;
+  if (f && f.size > maxUploadMb * 1024 * 1024) {
+    _selectedFile = null;
+    document.getElementById('file-input').value = '';
+    document.getElementById('drop-zone').classList.remove('has-file');
+    fileResetResult();
+    fileLog(`Файл завеликий: максимум ${maxUploadMb} MB`, 'log-error');
+    return;
+  }
   _selectedFile = f;
   const dz = document.getElementById('drop-zone');
   if (f) {
@@ -2301,8 +2312,10 @@ function openHelp() {
   if (_cfg) {
     const pages = _cfg.max_pdf_pages ?? 10;
     const chars = (_cfg.max_chars ?? 30000).toLocaleString('uk-UA');
+    const upload = _cfg.max_upload_mb ?? 50;
     document.getElementById('help-limit-pages').textContent = pages;
     document.getElementById('help-limit-chars').textContent = chars;
+    document.getElementById('help-limit-upload').textContent = upload;
   }
   document.getElementById('help-modal').classList.add('open');
 }
@@ -2649,6 +2662,10 @@ ADMIN_HTML = r"""<!DOCTYPE html>
             <label>Макс. символів файлу (DOCX / PPTX / XLSX / TXT)</label>
             <input type="number" id="cfg_max_chars" min="1000" max="1000000" step="1000" required>
           </div>
+          <div class="full">
+            <label>Макс. фізичний розмір файлу (MB, усі формати)</label>
+            <input type="number" id="cfg_max_upload_mb" min="1" max="500" step="1" required>
+          </div>
         </div>
         <!-- PPTX -->
         <div id="format-tab-pptx" class="settings-grid" style="display:none">
@@ -2910,6 +2927,7 @@ function collectCfg() {
     chunk_size:    parseInt(document.getElementById('cfg_chunk_size').value),
     max_pdf_pages: parseInt(document.getElementById('cfg_max_pdf_pages').value),
     max_chars:     parseInt(document.getElementById('cfg_max_chars').value),
+    max_upload_mb: parseInt(document.getElementById('cfg_max_upload_mb').value),
     temperature:   parseFloat(document.getElementById('cfg_temperature').value),
     retry:         parseInt(document.getElementById('cfg_retry').value),
     insert_mode:   document.getElementById('cfg_insert_mode').value,
@@ -3000,6 +3018,7 @@ function applyCfg(cfg) {
   document.getElementById('cfg_chunk_size').value    = cfg.chunk_size    ?? 3000;
   document.getElementById('cfg_max_pdf_pages').value = cfg.max_pdf_pages ?? 10;
   document.getElementById('cfg_max_chars').value     = cfg.max_chars     ?? 30000;
+  document.getElementById('cfg_max_upload_mb').value = cfg.max_upload_mb ?? 50;
   document.getElementById('cfg_temperature').value   = cfg.temperature   ?? 0.1;
   document.getElementById('cfg_retry').value         = cfg.retry         ?? 2;
   document.getElementById('cfg_insert_mode').value   = cfg.insert_mode   ?? 'replace';
@@ -3176,6 +3195,7 @@ class ConfigUpdate(BaseModel):
     chunk_size: int = Field(ge=500, le=20000)
     max_pdf_pages: int = Field(ge=1, le=500)
     max_chars: int = Field(ge=1000, le=1000000)
+    max_upload_mb: int = Field(ge=1, le=500)
     temperature: float = Field(ge=0, le=2)
     retry: int = Field(ge=1, le=6)
     insert_mode: str = Field(pattern="^(replace|append|prepend)$")
@@ -3266,6 +3286,7 @@ def get_limits():
     return JSONResponse({
         "max_chars":     CFG.get("max_chars",     30000),
         "max_pdf_pages": CFG.get("max_pdf_pages", 10),
+        "max_upload_mb": CFG.get("max_upload_mb", 50),
     })
 
 
@@ -3538,6 +3559,11 @@ def translate_html(req: TranslateHtmlRequest, request: Request):
     return StreamingResponse(generate(), media_type="text/event-stream")
 
 
+async def _read_upload_limited(file: UploadFile, max_bytes: int) -> bytes | None:
+    content = await file.read(max_bytes + 1)
+    return None if len(content) > max_bytes else content
+
+
 @app.post("/translate-file")
 async def translate_file_endpoint(
     request: Request,
@@ -3545,11 +3571,36 @@ async def translate_file_endpoint(
     lang_from: str = Form("auto"),
     lang_to: str = Form("Ukrainian"),
 ):
-    content = await file.read()
     filename = file.filename or "file.txt"
     ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "txt"
     base = filename.rsplit(".", 1)[0] if "." in filename else filename
     client_ip = request.client.host if request.client else None
+    max_upload_mb = int(CFG.get("max_upload_mb", 50))
+    try:
+        content = await _read_upload_limited(
+            file,
+            max_upload_mb * 1024 * 1024,
+        )
+    finally:
+        await file.close()
+
+    if content is None:
+        message = f"Файл завеликий: максимальний розмір {max_upload_mb} MB"
+        log_stat(
+            ip=client_ip, kind="file", filename=filename, file_ext=ext,
+            lang_from=lang_from, lang_to=lang_to, chars=None, pages=None,
+            duration=0, status="error", error=message,
+        )
+
+        def reject_large_upload():
+            yield f"data: {json.dumps({'type': 'error', 'text': message})}\n\n"
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+
+        return StreamingResponse(
+            reject_large_upload(),
+            media_type="text/event-stream",
+            status_code=413,
+        )
 
     request_id = str(uuid.uuid4())
     stop_event = threading.Event()
