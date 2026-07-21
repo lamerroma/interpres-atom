@@ -66,7 +66,7 @@ CONFIG_FILE = os.path.join(os.path.dirname(__file__), "translator_config.json")
 DEFAULTS = {
     "base_url":        "http://127.0.0.1:11434/v1",
     "model":           "rinex20/translategemma3:12b",
-    "max_tokens":      2048,
+    "max_tokens":      4096,
     "llm_timeout":     180,
     "chunk_size":      3000,
     "temperature":     0.1,
@@ -82,7 +82,7 @@ DEFAULTS = {
 
 HOST = os.environ.get("INTERPRES_HOST", "0.0.0.0")
 PORT = int(os.environ.get("INTERPRES_PORT", "7860"))
-APP_VERSION = "1.22.1-beta.5"
+APP_VERSION = "1.22.1-beta.6"
 
 LANG_NAMES_UK = {
     "Arabic":     "Арабська",
@@ -504,6 +504,14 @@ def _ollama_native_host() -> str:
     return url
 
 
+def _ollama_options() -> dict:
+    """Request overrides; remaining generation settings come from Modelfile."""
+    return {
+        "temperature": float(CFG.get("temperature", 0.1)),
+        "num_predict": int(CFG.get("max_tokens", 4096)),
+    }
+
+
 def _translate_unit(text: str, lang_from: str, lang_to: str,
                     stop_event: threading.Event) -> str | None:
     """Translate a single short piece of text (one run / one block).
@@ -536,6 +544,7 @@ def _translate_unit(text: str, lang_from: str, lang_to: str,
                     "model": CFG["model"],
                     "messages": [{"role": "user", "content": content}],
                     "stream": False,
+                    "options": _ollama_options(),
                 },
                 timeout=CFG["llm_timeout"],
             )
@@ -639,6 +648,7 @@ def _translate_unit_streaming(text: str, lang_from: str, lang_to: str,
                     "model": CFG["model"],
                     "messages": [{"role": "user", "content": content}],
                     "stream": True,
+                    "options": _ollama_options(),
                 },
                 timeout=CFG["llm_timeout"],
                 stream=True,
@@ -716,8 +726,6 @@ def _translate_json_segments(batch: dict, lang_to: str,
     prompt = f"{instruction}\n\n{json_input}"
 
     max_retries = _retry_count()
-    temperature = float(CFG.get("temperature", 0.1))
-
     for attempt in range(max_retries):
         if stop_event.is_set():
             return batch
@@ -728,7 +736,7 @@ def _translate_json_segments(batch: dict, lang_to: str,
                     "model": CFG["model"],
                     "messages": [{"role": "user", "content": prompt}],
                     "stream": False,
-                    "options": {"temperature": temperature},
+                    "options": _ollama_options(),
                 },
                 timeout=CFG["llm_timeout"],
             )
@@ -2616,7 +2624,7 @@ function switchFormatTab(tab, btn) {
 function applyCfg(cfg) {
   document.getElementById('cfg_base_url').value      = cfg.base_url      ?? '';
   document.getElementById('cfg_model').value         = cfg.model         ?? '';
-  document.getElementById('cfg_max_tokens').value    = cfg.max_tokens    ?? 2048;
+  document.getElementById('cfg_max_tokens').value    = cfg.max_tokens    ?? 4096;
   document.getElementById('cfg_llm_timeout').value   = cfg.llm_timeout   ?? 180;
   document.getElementById('cfg_chunk_size').value    = cfg.chunk_size    ?? 3000;
   document.getElementById('cfg_max_pdf_pages').value = cfg.max_pdf_pages ?? 10;

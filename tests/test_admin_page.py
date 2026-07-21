@@ -32,7 +32,9 @@ def valid_config(**overrides):
 class AdminPageTests(unittest.TestCase):
     def test_translation_defaults_use_primary_model_settings(self):
         self.assertEqual(server.DEFAULTS["model"], "rinex20/translategemma3:12b")
+        self.assertEqual(server.DEFAULTS["max_tokens"], 4096)
         self.assertEqual(server.DEFAULTS["temperature"], 0.1)
+        self.assertIn("cfg.max_tokens    ?? 4096", server.ADMIN_HTML)
         self.assertIn("cfg.temperature   ?? 0.1", server.ADMIN_HTML)
 
     def test_valid_config_is_accepted(self):

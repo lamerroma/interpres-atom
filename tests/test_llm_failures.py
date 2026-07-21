@@ -36,6 +36,7 @@ class LlmFailureTests(unittest.TestCase):
             "llm_timeout": 1,
             "retry": 2,
             "temperature": 0,
+            "max_tokens": 4096,
         })
         self.stop_event = threading.Event()
 
@@ -55,6 +56,10 @@ class LlmFailureTests(unittest.TestCase):
 
         self.assertEqual(result, "Переклад")
         self.assertEqual(post.call_count, 1)
+        self.assertEqual(post.call_args.kwargs["json"]["options"], {
+            "temperature": 0.0,
+            "num_predict": 4096,
+        })
 
     @patch.object(server.req_lib, "post")
     def test_unit_http_failure_retries_then_raises(self, post):
@@ -92,6 +97,10 @@ class LlmFailureTests(unittest.TestCase):
 
         self.assertEqual(result, {"0": "Один", "1": "Два"})
         self.assertEqual(token_stats, {"tok_in": 10, "tok_out": 5})
+        self.assertEqual(post.call_args.kwargs["json"]["options"], {
+            "temperature": 0.0,
+            "num_predict": 4096,
+        })
 
     @patch.object(server.req_lib, "post")
     def test_json_batch_missing_key_retries_then_raises(self, post):
@@ -144,6 +153,10 @@ class LlmFailureTests(unittest.TestCase):
             next(stream)
 
         self.assertEqual(post.call_count, 1)
+        self.assertEqual(post.call_args.kwargs["json"]["options"], {
+            "temperature": 0.0,
+            "num_predict": 4096,
+        })
 
     def test_docx_backend_failure_does_not_create_download(self):
         from docx import Document
