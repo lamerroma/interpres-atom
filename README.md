@@ -31,7 +31,7 @@
 ## Запуск
 
 ```bash
-pip install fastapi uvicorn requests pypdf python-docx
+pip install -r requirements.lock
 python translate_server.py
 ```
 

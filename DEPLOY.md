@@ -27,7 +27,7 @@ sudo useradd --system --no-create-home --shell /usr/sbin/nologin interpres
 ```bash
 cd /opt/interpres-atom
 sudo python3 -m venv .venv
-sudo .venv/bin/pip install -r requirements.txt
+sudo .venv/bin/pip install -r requirements.lock
 ```
 
 ### 4. Права доступу
@@ -98,7 +98,7 @@ sudo systemctl restart interpres-atom
 Якщо з'явились нові залежності:
 
 ```bash
-sudo /opt/interpres-atom/.venv/bin/pip install -r requirements.txt
+sudo /opt/interpres-atom/.venv/bin/pip install -r requirements.lock
 sudo systemctl restart interpres-atom
 ```
 

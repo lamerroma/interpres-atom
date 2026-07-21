@@ -2,6 +2,7 @@ import io
 import csv
 import json
 import os
+import zipfile
 import sqlite3
 import logging
 import traceback
@@ -13,6 +14,7 @@ import secrets
 import base64
 import time
 import subprocess
+from collections import OrderedDict
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from urllib.parse import quote
@@ -27,6 +29,7 @@ _REQUIRED = {
     "pypdf":      "pypdf",
     "mammoth":    "mammoth",
     "html2text":  "html2text",
+    "bleach":     "bleach",
 }
 _missing = []
 for _mod, _pkg in _REQUIRED.items():
@@ -55,6 +58,7 @@ if _missing_opt:
     )
 
 import requests as req_lib
+import bleach
 from fastapi import FastAPI, UploadFile, File, Form, Request
 from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
@@ -87,7 +91,7 @@ DEFAULTS = {
 
 HOST = os.environ.get("INTERPRES_HOST", "0.0.0.0")
 PORT = int(os.environ.get("INTERPRES_PORT", "7860"))
-APP_VERSION = "1.22.2-beta.1"
+APP_VERSION = "1.22.2-beta.2"
 
 LANG_NAMES_UK = {
     "Arabic":     "Арабська",
@@ -405,7 +409,9 @@ class _ActiveJob:
     stop_event: threading.Event
     start_event: threading.Event | None = None
     done_event: threading.Event | None = None
+    request_id: str | None = None
     execution_started: bool = False
+    last_activity: float = field(default_factory=time.monotonic)
     state_lock: threading.Lock = field(default_factory=threading.Lock)
 
     def cancel(self) -> bool:
@@ -424,20 +430,186 @@ class _ActiveJob:
                     self.done_event.set()
                 return False
             self.execution_started = True
+            self.last_activity = time.monotonic()
             return True
+
+    def touch(self) -> None:
+        with self.state_lock:
+            self.last_activity = time.monotonic()
+
+    def stalled_for(self) -> float:
+        with self.state_lock:
+            return time.monotonic() - self.last_activity
 
 
 _active: dict[str, _ActiveJob] = {}
-_results: dict[str, tuple[str, bytes]] = {}
-_preview_cache: dict[str, bytes] = {}   # file_id -> HTML bytes from mammoth
+_jobs_by_event: dict[int, _ActiveJob] = {}
+_active_lock = threading.Lock()
 _sessions: dict[str, tuple[float, str]] = {}  # session_id -> (last_seen, client_ip)
 _SESSION_TTL = 45                       # seconds before a session is considered gone
 _sessions_lock = threading.Lock()
 
-_job_queue: _queue_mod.Queue = _queue_mod.Queue()
+_MAX_PENDING_JOBS = 20
+_job_queue: _queue_mod.Queue = _queue_mod.Queue(maxsize=_MAX_PENDING_JOBS)
 _ticket_lock = threading.Lock()
 _ticket_issued = 0
 _ticket_serving = 0
+
+
+def _register_job(request_id: str, job: _ActiveJob) -> None:
+    job.request_id = request_id
+    with _active_lock:
+        _active[request_id] = job
+        _jobs_by_event[id(job.stop_event)] = job
+
+
+def _get_job(request_id: str) -> _ActiveJob | None:
+    with _active_lock:
+        return _active.get(request_id)
+
+
+def _forget_job(request_id: str, expected: _ActiveJob | None = None) -> None:
+    with _active_lock:
+        job = _active.get(request_id)
+        if job is None or (expected is not None and job is not expected):
+            return
+        _active.pop(request_id, None)
+        _jobs_by_event.pop(id(job.stop_event), None)
+
+
+def _touch_job(stop_event: threading.Event) -> None:
+    with _active_lock:
+        job = _jobs_by_event.get(id(stop_event))
+    if job is not None:
+        job.touch()
+
+
+def _active_job_count() -> int:
+    with _active_lock:
+        return len(_active)
+
+
+@dataclass
+class _CachedResult:
+    filename: str
+    data: bytes
+    mime: str
+    created_at: float = field(default_factory=time.time)
+    preview: bytes | None = None
+
+    @property
+    def size(self) -> int:
+        return len(self.data) + (len(self.preview) if self.preview else 0)
+
+
+_result_cache: OrderedDict[str, _CachedResult] = OrderedDict()
+_result_cache_lock = threading.Lock()
+_RESULT_TTL_SECONDS = 60 * 60
+_RESULT_MAX_ITEMS = 20
+_RESULT_MAX_BYTES = 256 * 1024 * 1024
+
+
+def _cleanup_result_cache(now: float | None = None) -> None:
+    now = time.time() if now is None else now
+    expired = [
+        file_id for file_id, entry in _result_cache.items()
+        if now - entry.created_at > _RESULT_TTL_SECONDS
+    ]
+    for file_id in expired:
+        _result_cache.pop(file_id, None)
+
+    total_bytes = sum(entry.size for entry in _result_cache.values())
+    while (_result_cache and
+           (len(_result_cache) > _RESULT_MAX_ITEMS or
+            total_bytes > _RESULT_MAX_BYTES)):
+        _, removed = _result_cache.popitem(last=False)
+        total_bytes -= removed.size
+
+
+def _cache_result(file_id: str, filename: str, data: bytes, mime: str) -> bool:
+    with _result_cache_lock:
+        _result_cache[file_id] = _CachedResult(filename, data, mime)
+        _cleanup_result_cache()
+        return file_id in _result_cache
+
+
+def _cache_preview(file_id: str, html: bytes) -> bool:
+    with _result_cache_lock:
+        entry = _result_cache.get(file_id)
+        if entry is None:
+            return False
+        entry.preview = html
+        _cleanup_result_cache()
+        if file_id in _result_cache:
+            return True
+        entry.preview = None
+        _result_cache[file_id] = entry
+        _cleanup_result_cache()
+        return False
+
+
+def _get_cached_result(file_id: str) -> _CachedResult | None:
+    with _result_cache_lock:
+        _cleanup_result_cache()
+        return _result_cache.get(file_id)
+
+
+_PREVIEW_TAGS = {
+    "a", "b", "blockquote", "br", "caption", "code", "col", "colgroup",
+    "div", "em", "h1", "h2", "h3", "h4", "h5", "h6", "hr", "i",
+    "img", "li", "ol", "p", "pre", "s", "span", "strong", "sub",
+    "sup", "table", "tbody", "td", "tfoot", "th", "thead", "tr", "u",
+    "ul",
+}
+_PREVIEW_ATTRIBUTES = {
+    "a": ["href", "title"],
+    "img": ["src", "alt", "title", "width", "height"],
+    "td": ["colspan", "rowspan"],
+    "th": ["colspan", "rowspan"],
+    "col": ["span", "width"],
+}
+
+
+def _sanitize_preview_html(html: str) -> str:
+    return bleach.clean(
+        html,
+        tags=_PREVIEW_TAGS,
+        attributes=_PREVIEW_ATTRIBUTES,
+        protocols={"http", "https", "mailto", "data"},
+        strip=True,
+        strip_comments=True,
+    )
+
+
+def _job_stall_timeout() -> int:
+    return max(60, int(CFG.get("llm_timeout", 180)) + 30)
+
+
+def _enqueue_job(request_id: str, job: _ActiveJob) -> int | None:
+    global _ticket_issued
+    _register_job(request_id, job)
+    try:
+        with _ticket_lock:
+            _job_queue.put_nowait(job)
+            _ticket_issued += 1
+            return _ticket_issued
+    except _queue_mod.Full:
+        _forget_job(request_id, job)
+        return None
+
+
+def _queue_full_response() -> StreamingResponse:
+    message = "Черга заповнена. Спробуйте повторити пізніше."
+
+    def generate():
+        yield f"data: {json.dumps({'type': 'error', 'text': message})}\n\n"
+        yield f"data: {json.dumps({'type': 'done'})}\n\n"
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        status_code=429,
+    )
 
 
 def _queue_worker():
@@ -447,12 +619,28 @@ def _queue_worker():
         with _ticket_lock:
             _ticket_serving += 1
         if job.start_event is None or job.done_event is None:
+            _job_queue.task_done()
             continue
-        job.start_event.set()
-        if job.stop_event.is_set():
-            job.done_event.set()
-            continue
-        job.done_event.wait()
+        try:
+            job.touch()
+            job.start_event.set()
+            if job.stop_event.is_set():
+                job.done_event.set()
+                continue
+            while not job.done_event.wait(timeout=1):
+                if job.stalled_for() <= _job_stall_timeout():
+                    continue
+                log.error(
+                    "Queue watchdog stopped stalled job %s after %.1f seconds",
+                    job.request_id,
+                    job.stalled_for(),
+                )
+                job.stop_event.set()
+                job.done_event.set()
+                if job.request_id:
+                    _forget_job(job.request_id, job)
+        finally:
+            _job_queue.task_done()
 
 
 threading.Thread(target=_queue_worker, daemon=True).start()
@@ -582,6 +770,8 @@ def get_gpu_history(hours: int = 3) -> list[dict]:
 def _gpu_monitor_worker() -> None:
     while True:
         _store_gpu_metrics(_gpu_status())
+        with _result_cache_lock:
+            _cleanup_result_cache()
         time.sleep(30)
 
 
@@ -635,6 +825,7 @@ def split_chunks(text: str) -> list[str]:
 
 
 def call_llm(messages: list, stop_event: threading.Event) -> str | None:
+    _touch_job(stop_event)
     resp = req_lib.post(
         f"{CFG['base_url']}/chat/completions",
         headers={"Authorization": "Bearer dummy", "Content-Type": "application/json"},
@@ -644,6 +835,7 @@ def call_llm(messages: list, stop_event: threading.Event) -> str | None:
     )
     collected = []
     for raw_line in resp.iter_lines():
+        _touch_job(stop_event)
         if stop_event.is_set():
             resp.close()
             return None
@@ -709,6 +901,7 @@ def _translate_unit(text: str, lang_from: str, lang_to: str,
         if stop_event.is_set():
             return None
         try:
+            _touch_job(stop_event)
             resp = req_lib.post(
                 f"{_ollama_native_host()}/api/chat",
                 json={
@@ -812,7 +1005,9 @@ def _translate_unit_streaming(text: str, lang_from: str, lang_to: str,
     for attempt in range(attempts):
         emitted = False
         done_received = False
+        resp = None
         try:
+            _touch_job(stop_event)
             resp = req_lib.post(
                 f"{_ollama_native_host()}/api/chat",
                 json={
@@ -830,8 +1025,8 @@ def _translate_unit_streaming(text: str, lang_from: str, lang_to: str,
                 continue
 
             for raw_line in resp.iter_lines():
+                _touch_job(stop_event)
                 if stop_event.is_set():
-                    resp.close()
                     return
                 if not raw_line:
                     continue
@@ -861,6 +1056,9 @@ def _translate_unit_streaming(text: str, lang_from: str, lang_to: str,
             last_error = f"помилка з'єднання з Ollama: {e}"
             if emitted:
                 raise TranslationError(f"Потік перекладу перервано: {last_error}")
+        finally:
+            if resp is not None:
+                resp.close()
         log.warning(f"_translate_unit_streaming {last_error} (attempt {attempt + 1}/{attempts})")
 
     raise TranslationError(f"Переклад не виконано: {last_error}")
@@ -901,6 +1099,7 @@ def _translate_json_segments(batch: dict, lang_to: str,
         if stop_event.is_set():
             return batch
         try:
+            _touch_job(stop_event)
             resp = req_lib.post(
                 f"{_ollama_native_host()}/api/chat",
                 json={
@@ -1091,7 +1290,17 @@ def translate_pdf_bytes(content, base_name, lang_from, lang_to, stop_event):
                f"(максимум {max_pages})")
         return
 
-    yield ("meta", {"chars": None, "pages": total_pages})
+    total_chars = sum(len(page.get_text("text")) for page in doc)
+    max_chars = CFG.get("max_chars", 30000)
+    if total_chars > max_chars:
+        doc.close()
+        yield ("error",
+               f"PDF занадто великий: {total_chars} символів "
+               f"(максимум {max_chars})")
+        return
+
+    yield ("log", f"PDF: {total_chars} символів")
+    yield ("meta", {"chars": total_chars, "pages": total_pages})
 
     for page_num in range(total_pages):
         if stop_event.is_set():
@@ -1389,7 +1598,8 @@ USER_HTML = r"""<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Interpres-Atom</title>
-<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked@15.0.12/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3.2.6/dist/purify.min.js"></script>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   :root {
@@ -1910,7 +2120,7 @@ USER_HTML = r"""<!DOCTYPE html>
     <button id="btn-preview-pdf" onclick="savePdf()">&#128438; Зберегти PDF</button>
     <button id="btn-preview-close" onclick="closePreview()">&#10005; Закрити</button>
   </div>
-  <iframe id="preview-iframe" sandbox="allow-same-origin allow-scripts allow-modals"></iframe>
+  <iframe id="preview-iframe" sandbox="allow-same-origin allow-modals"></iframe>
 </div>
 
 <script>
@@ -2035,10 +2245,11 @@ async function doTranslate() {
 function showResult(text, format) {
   const resultEl = document.getElementById('result');
   resultEl.classList.remove('streaming');
-  if (format === 'markdown' && typeof marked !== 'undefined') {
-    resultEl.innerHTML = marked.parse(text);
+  if (format === 'markdown' && typeof marked !== 'undefined' &&
+      typeof DOMPurify !== 'undefined') {
+    resultEl.innerHTML = DOMPurify.sanitize(marked.parse(text));
   } else {
-    resultEl.innerHTML = text;
+    resultEl.textContent = text;
   }
 }
 
@@ -2169,7 +2380,9 @@ async function doTranslateFile() {
   setWorking('file', true);
   fileResetResult();
   document.getElementById('file-progress-wrap').classList.add('visible');
-  _fileController = new AbortController();
+  _fileRequestId = null;
+  const controller = new AbortController();
+  _fileController = controller;
   _fileStartTime = Date.now();
 
   const fd = new FormData();
@@ -2181,8 +2394,9 @@ async function doTranslateFile() {
 
   try {
     const resp = await fetch('/translate-file', {
-      method: 'POST', signal: _fileController.signal, body: fd,
+      method: 'POST', signal: controller.signal, body: fd,
     });
+    _fileRequestId = resp.headers.get('X-Request-ID') || _fileRequestId;
     const reader = resp.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
@@ -2211,6 +2425,12 @@ async function doTranslateFile() {
           if (segsM) statsAccum.segs = parseInt(segsM[1]);
           if (charsM) statsAccum.chars = parseInt(charsM[1]);
           if (batchM) statsAccum.batches = parseInt(batchM[1]);
+        }
+        else if (evt.type === 'queue' && evt.ahead > 0) {
+          fileLog(`У черзі: попереду ${evt.ahead}`);
+        }
+        else if (evt.type === 'queue' && evt.ahead === 0) {
+          fileLog('Переклад розпочато');
         }
         else if (evt.type === 'progress') {
           setProgress(evt.pct || 0, evt.text);
@@ -2243,9 +2463,11 @@ async function doTranslateFile() {
   } catch (e) {
     if (e.name !== 'AbortError') fileLog('Помилка з\'єднання: ' + e.message, 'log-error');
   }
-  setWorking('file', false);
-  _fileController = null;
-  _fileRequestId = null;
+  if (_fileController === controller) {
+    setWorking('file', false);
+    _fileController = null;
+    _fileRequestId = null;
+  }
 }
 
 function openPreview() {
@@ -2276,11 +2498,17 @@ document.getElementById('preview-modal').addEventListener('click', e => {
 });
 
 async function doFileStop() {
-  if (_fileController) { _fileController.abort(); _fileController = null; }
-  if (_fileRequestId) {
-    await fetch('/stop/' + _fileRequestId, {method: 'POST'}).catch(() => {});
-    _fileRequestId = null;
+  const controller = _fileController;
+  for (let attempt = 0; attempt < 10 && !_fileRequestId && controller; attempt++) {
+    await new Promise(resolve => setTimeout(resolve, 50));
   }
+  const requestId = _fileRequestId;
+  if (requestId) {
+    await fetch('/stop/' + requestId, {method: 'POST'}).catch(() => {});
+  }
+  if (controller) controller.abort();
+  _fileController = null;
+  _fileRequestId = null;
   fileLog('Зупинено користувачем');
   setWorking('file', false);
 }
@@ -3286,7 +3514,7 @@ def admin_status():
         "online_users": online_users,
         "online_clients": online_clients,
         "gpu": gpu,
-        "active_jobs": len(_active),
+        "active_jobs": _active_job_count(),
         "queued_jobs": _job_queue.qsize(),
     })
 
@@ -3366,17 +3594,16 @@ def post_config(data: ConfigUpdate):
 
 @app.post("/stop/{request_id}")
 def stop_translation(request_id: str):
-    job = _active.get(request_id)
+    job = _get_job(request_id)
     if job:
         released = job.cancel()
         if released:
-            _active.pop(request_id, None)
+            _forget_job(request_id, job)
     return JSONResponse({"ok": True})
 
 
 @app.post("/translate")
 def translate(req: TranslateRequest, request: Request):
-    global _ticket_issued
     request_id = str(uuid.uuid4())
     stop_event = threading.Event()
     client_ip = request.client.host if request.client else None
@@ -3384,11 +3611,9 @@ def translate(req: TranslateRequest, request: Request):
     start_evt = threading.Event()
     done_evt = threading.Event()
     job = _ActiveJob(stop_event, start_evt, done_evt)
-    _active[request_id] = job
-    with _ticket_lock:
-        _ticket_issued += 1
-        my_ticket = _ticket_issued
-    _job_queue.put(job)
+    my_ticket = _enqueue_job(request_id, job)
+    if my_ticket is None:
+        return _queue_full_response()
 
     def generate():
         def log_event(msg: str):
@@ -3478,7 +3703,7 @@ def translate(req: TranslateRequest, request: Request):
             yield f"data: {json.dumps({'type': 'done'})}\n\n"
         finally:
             done_evt.set()
-            _active.pop(request_id, None)
+            _forget_job(request_id, job)
             log_stat(
                 ip=client_ip,
                 kind="text",
@@ -3503,7 +3728,6 @@ def translate(req: TranslateRequest, request: Request):
 @app.post("/translate-html")
 def translate_html(req: TranslateHtmlRequest, request: Request):
     """Translate HTML preserving formatting tags — text nodes only."""
-    global _ticket_issued
     request_id = str(uuid.uuid4())
     stop_event = threading.Event()
     client_ip = request.client.host if request.client else None
@@ -3511,11 +3735,9 @@ def translate_html(req: TranslateHtmlRequest, request: Request):
     start_evt = threading.Event()
     done_evt = threading.Event()
     job = _ActiveJob(stop_event, start_evt, done_evt)
-    _active[request_id] = job
-    with _ticket_lock:
-        _ticket_issued += 1
-        my_ticket = _ticket_issued
-    _job_queue.put(job)
+    my_ticket = _enqueue_job(request_id, job)
+    if my_ticket is None:
+        return _queue_full_response()
 
     def generate():
         def log_event(msg):
@@ -3610,7 +3832,7 @@ def translate_html(req: TranslateHtmlRequest, request: Request):
             yield f"data: {json.dumps({'type': 'done'})}\n\n"
         finally:
             done_evt.set()
-            _active.pop(request_id, None)
+            _forget_job(request_id, job)
             log_stat(
                 ip=client_ip, kind="text", filename=None, file_ext=None,
                 lang_from=req.lang_from, lang_to=req.lang_to,
@@ -3629,6 +3851,29 @@ def translate_html(req: TranslateHtmlRequest, request: Request):
 async def _read_upload_limited(file: UploadFile, max_bytes: int) -> bytes | None:
     content = await file.read(max_bytes + 1)
     return None if len(content) > max_bytes else content
+
+
+_MAX_OFFICE_ARCHIVE_MEMBERS = 10_000
+_MAX_OFFICE_MEMBER_BYTES = 100 * 1024 * 1024
+_MAX_OFFICE_UNCOMPRESSED_BYTES = 256 * 1024 * 1024
+
+
+def _validate_office_archive(content: bytes) -> str | None:
+    try:
+        with zipfile.ZipFile(io.BytesIO(content)) as archive:
+            members = archive.infolist()
+    except (zipfile.BadZipFile, OSError):
+        return "Пошкоджений або некоректний файл Office"
+
+    if len(members) > _MAX_OFFICE_ARCHIVE_MEMBERS:
+        return "Файл Office містить забагато внутрішніх елементів"
+    if any(member.flag_bits & 0x1 for member in members):
+        return "Зашифровані файли Office не підтримуються"
+    if any(member.file_size > _MAX_OFFICE_MEMBER_BYTES for member in members):
+        return "Один з елементів файлу Office завеликий після розпакування"
+    if sum(member.file_size for member in members) > _MAX_OFFICE_UNCOMPRESSED_BYTES:
+        return "Файл Office завеликий після розпакування"
+    return None
 
 
 @app.post("/translate-file")
@@ -3669,9 +3914,35 @@ async def translate_file_endpoint(
             status_code=413,
         )
 
+    archive_error = (
+        _validate_office_archive(content)
+        if ext in {"docx", "pptx", "xlsx"} else None
+    )
+    if archive_error:
+        log_stat(
+            ip=client_ip, kind="file", filename=filename, file_ext=ext,
+            lang_from=lang_from, lang_to=lang_to, chars=None, pages=None,
+            duration=0, status="error", error=archive_error,
+        )
+
+        def reject_office_archive():
+            yield f"data: {json.dumps({'type': 'error', 'text': archive_error})}\n\n"
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+
+        return StreamingResponse(
+            reject_office_archive(),
+            media_type="text/event-stream",
+            status_code=400,
+        )
+
     request_id = str(uuid.uuid4())
     stop_event = threading.Event()
-    _active[request_id] = _ActiveJob(stop_event)
+    start_evt = threading.Event()
+    done_evt = threading.Event()
+    job = _ActiveJob(stop_event, start_evt, done_evt)
+    my_ticket = _enqueue_job(request_id, job)
+    if my_ticket is None:
+        return _queue_full_response()
 
     def generate():
         def ts():
@@ -3689,6 +3960,22 @@ async def translate_file_endpoint(
             yield f"data: {json.dumps({'type': 'id', 'text': request_id})}\n\n"
             yield log_event(f"File: {filename} ({len(content)} bytes)")
 
+            while not start_evt.wait(timeout=2):
+                if stop_event.is_set():
+                    final_status = "stopped"
+                    yield f"data: {json.dumps({'type': 'done'})}\n\n"
+                    return
+                with _ticket_lock:
+                    ahead = my_ticket - _ticket_serving
+                if ahead > 0:
+                    yield f"data: {json.dumps({'type': 'queue', 'ahead': ahead})}\n\n"
+
+            yield f"data: {json.dumps({'type': 'queue', 'ahead': 0})}\n\n"
+            if not job.begin_execution():
+                final_status = "stopped"
+                yield f"data: {json.dumps({'type': 'done'})}\n\n"
+                return
+
             if ext == "docx":
                 it = translate_docx_bytes(content, base, lang_from, lang_to, stop_event)
             elif ext == "pdf":
@@ -3702,6 +3989,7 @@ async def translate_file_endpoint(
 
             try:
                 for event in it:
+                    job.touch()
                     kind = event[0]
                     if kind == "log":
                         yield f"data: {json.dumps({'type': 'log', 'text': event[1]})}\n\n"
@@ -3724,7 +4012,10 @@ async def translate_file_endpoint(
                     elif kind == "done":
                         _, out_filename, mime, data = event
                         file_id = str(uuid.uuid4())
-                        _results[file_id] = (out_filename, data, mime)
+                        if not _cache_result(file_id, out_filename, data, mime):
+                            final_error = "Результат завеликий для тимчасового сховища"
+                            yield f"data: {json.dumps({'type': 'error', 'text': final_error})}\n\n"
+                            return
                         final_status = "success"
                         yield f"data: {json.dumps({'type': 'download', 'url': f'/download/{file_id}', 'filename': out_filename})}\n\n"
                         # Generate HTML preview for DOCX files
@@ -3732,8 +4023,9 @@ async def translate_file_endpoint(
                             try:
                                 import mammoth as _mammoth
                                 html_val = _mammoth.convert_to_html(io.BytesIO(data)).value
-                                _preview_cache[file_id] = html_val.encode("utf-8")
-                                yield f"data: {json.dumps({'type': 'preview', 'url': f'/preview/{file_id}'})}\n\n"
+                                safe_html = _sanitize_preview_html(html_val).encode("utf-8")
+                                if _cache_preview(file_id, safe_html):
+                                    yield f"data: {json.dumps({'type': 'preview', 'url': f'/preview/{file_id}'})}\n\n"
                             except ImportError:
                                 yield f"data: {json.dumps({'type': 'log', 'text': 'Перегляд недоступний: встановіть mammoth (pip install mammoth)'})}\n\n"
                             except Exception as _e:
@@ -3756,7 +4048,8 @@ async def translate_file_endpoint(
                 return
 
         finally:
-            _active.pop(request_id, None)
+            done_evt.set()
+            _forget_job(request_id, job)
             log_stat(
                 ip=client_ip,
                 kind="file",
@@ -3771,25 +4064,29 @@ async def translate_file_endpoint(
                 error=final_error,
             )
 
-    return StreamingResponse(generate(), media_type="text/event-stream")
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"X-Request-ID": request_id},
+    )
 
 
 @app.get("/download/{file_id}")
 def download_file(file_id: str):
-    entry = _results.get(file_id)
+    entry = _get_cached_result(file_id)
     if not entry:
         return JSONResponse({"error": "not found"}, status_code=404)
-    filename, data, mime = entry
     return Response(
-        content=data,
-        media_type=mime,
-        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"},
+        content=entry.data,
+        media_type=entry.mime,
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(entry.filename)}"},
     )
 
 
 @app.get("/preview/{file_id}")
 def preview_file(file_id: str):
-    html = _preview_cache.get(file_id)
+    entry = _get_cached_result(file_id)
+    html = entry.preview if entry else None
     if not html:
         return JSONResponse({"error": "not found"}, status_code=404)
     # Wrap in a minimal page with basic typography

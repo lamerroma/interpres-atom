@@ -8,6 +8,7 @@ import threading
 import time
 import unittest
 import subprocess
+import zipfile
 from unittest.mock import Mock, patch
 
 from fastapi import Request, UploadFile
@@ -37,6 +38,113 @@ def valid_config(**overrides):
 
 
 class AdminPageTests(unittest.TestCase):
+    def test_file_translation_uses_queue_and_cached_download(self):
+        request = Request({
+            "type": "http",
+            "client": ("203.0.113.7", 4321),
+            "headers": [],
+        })
+        upload = UploadFile(
+            file=io.BytesIO(b"Hello"),
+            filename="sample.txt",
+        )
+        with (
+            patch.object(server, "_translate_unit", return_value="Переклад"),
+            patch.object(server, "log_stat"),
+        ):
+            response = asyncio.run(server.translate_file_endpoint(
+                request,
+                upload,
+                lang_from="English",
+                lang_to="Ukrainian",
+            ))
+
+            async def collect_body():
+                return b"".join([
+                    chunk.encode("utf-8") if isinstance(chunk, str) else chunk
+                    async for chunk in response.body_iterator
+                ])
+
+            body = asyncio.run(collect_body()).decode("utf-8")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.headers.get("X-Request-ID"))
+        events = [
+            json.loads(line[6:])
+            for line in body.splitlines()
+            if line.startswith("data: ")
+        ]
+        self.assertTrue(any(event.get("type") == "queue" for event in events))
+        download = next(event for event in events if event.get("type") == "download")
+        downloaded = server.download_file(download["url"].rsplit("/", 1)[-1])
+        self.assertEqual(downloaded.status_code, 200)
+        self.assertEqual(downloaded.body, "Переклад".encode("utf-8"))
+
+    def test_queue_watchdog_releases_stalled_job(self):
+        request_id = str(time.time_ns())
+        job = server._ActiveJob(
+            threading.Event(), threading.Event(), threading.Event()
+        )
+        with (
+            patch.object(server, "_job_stall_timeout", return_value=0),
+            patch.object(server.log, "error"),
+        ):
+            self.assertIsNotNone(server._enqueue_job(request_id, job))
+            self.assertTrue(job.start_event.wait(1))
+            self.assertTrue(job.done_event.wait(2))
+
+        self.assertTrue(job.stop_event.is_set())
+        self.assertIsNone(server._get_job(request_id))
+
+    def test_preview_html_removes_scripts_and_javascript_links(self):
+        unsafe = (
+            '<script>alert(1)</script>'
+            '<a href="javascript:alert(document.domain)">click</a>'
+        )
+
+        safe = server._sanitize_preview_html(unsafe)
+
+        self.assertNotIn("<script", safe)
+        self.assertNotIn("javascript:", safe)
+        self.assertIn("<a>click</a>", safe)
+        self.assertNotIn("allow-scripts", server.USER_HTML)
+        self.assertIn("DOMPurify.sanitize(marked.parse(text))", server.USER_HTML)
+        self.assertIn("resultEl.textContent = text", server.USER_HTML)
+
+    def test_office_archive_rejects_large_uncompressed_content(self):
+        content = io.BytesIO()
+        with zipfile.ZipFile(content, "w", zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("word/document.xml", b"12345")
+
+        with patch.object(server, "_MAX_OFFICE_UNCOMPRESSED_BYTES", 4):
+            error = server._validate_office_archive(content.getvalue())
+
+        self.assertIn("після розпакування", error)
+
+    def test_result_cache_expires_and_evicts_oldest_entries(self):
+        with server._result_cache_lock:
+            original = server._result_cache.copy()
+            server._result_cache.clear()
+        try:
+            with (
+                patch.object(server, "_RESULT_MAX_ITEMS", 2),
+                patch.object(server, "_RESULT_MAX_BYTES", 100),
+                patch.object(server, "_RESULT_TTL_SECONDS", 10),
+            ):
+                self.assertTrue(server._cache_result("one", "1.txt", b"1", "text/plain"))
+                self.assertTrue(server._cache_result("two", "2.txt", b"2", "text/plain"))
+                self.assertTrue(server._cache_result("three", "3.txt", b"3", "text/plain"))
+                self.assertIsNone(server._get_cached_result("one"))
+
+                with server._result_cache_lock:
+                    server._result_cache["two"].created_at = time.time() - 11
+                self.assertIsNone(server._get_cached_result("two"))
+                self.assertIsNotNone(server._get_cached_result("three"))
+        finally:
+            with server._result_cache_lock:
+                server._result_cache.clear()
+                server._result_cache.update(original)
+
     def test_cancelled_queued_job_releases_queue_slot(self):
         job = server._ActiveJob(
             threading.Event(), threading.Event(), threading.Event()
@@ -67,6 +175,18 @@ class AdminPageTests(unittest.TestCase):
             stop_function.index("fetch('/stop/'"),
             stop_function.index("controller.abort()"),
         )
+
+    def test_file_stop_reaches_server_before_stream_is_aborted(self):
+        self.assertIn("resp.headers.get('X-Request-ID')", server.USER_HTML)
+        self.assertIn("if (_fileController === controller)", server.USER_HTML)
+        stop_function = server.USER_HTML.split(
+            "async function doFileStop() {", 1
+        )[1].split("//", 1)[0]
+        self.assertLess(
+            stop_function.index("fetch('/stop/'"),
+            stop_function.index("controller.abort()"),
+        )
+
 
     def test_translation_defaults_use_primary_model_settings(self):
         self.assertEqual(server.DEFAULTS["model"], "rinex20/translategemma3:12b")

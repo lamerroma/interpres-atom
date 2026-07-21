@@ -18,7 +18,7 @@ git fetch beta-origin develop-from-v1.22
 git switch -c develop-from-v1.22 --track beta-origin/develop-from-v1.22
 python3 -m venv .venv-beta
 .venv-beta/bin/pip install --upgrade pip
-.venv-beta/bin/pip install -r requirements.txt
+.venv-beta/bin/pip install -r requirements.lock
 ```
 
 In `/opt/interpres-atom-beta/translator_config.json`, set:
@@ -60,7 +60,7 @@ Run the automated tests before restarting beta:
 ```bash
 cd /opt/interpres-atom-beta
 git pull --ff-only beta-origin develop-from-v1.22
-.venv-beta/bin/pip install -r requirements.txt
+.venv-beta/bin/pip install -r requirements.lock
 sudo systemctl restart interpres-atom-beta.service
 sudo systemctl status interpres-atom-beta.service
 ```
