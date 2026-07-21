@@ -4,6 +4,7 @@ import time
 import unittest
 from unittest.mock import Mock, patch
 
+from fastapi import Request
 from pydantic import ValidationError
 
 import translate_server as server
@@ -88,6 +89,7 @@ class AdminPageTests(unittest.TestCase):
         self.assertTrue(payload["ollama_ok"])
         self.assertTrue(payload["model_available"])
         self.assertEqual(payload["version"], server.APP_VERSION)
+        self.assertIn("online_clients", payload)
         self.assertIn("active_jobs", payload)
         self.assertIn("queued_jobs", payload)
 
@@ -104,7 +106,10 @@ class AdminPageTests(unittest.TestCase):
         with server._sessions_lock:
             original = dict(server._sessions)
             server._sessions.clear()
-            server._sessions.update({"current": now, "stale": now - 100})
+            server._sessions.update({
+                "current": (now, "192.0.2.10"),
+                "stale": (now - 100, "192.0.2.20"),
+            })
         try:
             self.assertEqual(server._online_session_count(now), 1)
             with server._sessions_lock:
@@ -114,10 +119,55 @@ class AdminPageTests(unittest.TestCase):
                 server._sessions.clear()
                 server._sessions.update(original)
 
+    def test_online_clients_are_grouped_by_ip(self):
+        now = time.time()
+        with server._sessions_lock:
+            original = dict(server._sessions)
+            server._sessions.clear()
+            server._sessions.update({
+                "tab-1": (now - 2, "192.0.2.10"),
+                "tab-2": (now - 4, "192.0.2.10"),
+                "tab-3": (now - 1, "198.51.100.5"),
+            })
+        try:
+            count, clients = server._online_sessions_snapshot(now)
+            self.assertEqual(count, 3)
+            self.assertEqual(clients, [
+                {"ip": "192.0.2.10", "sessions": 2, "last_seen_seconds": 2},
+                {"ip": "198.51.100.5", "sessions": 1, "last_seen_seconds": 1},
+            ])
+        finally:
+            with server._sessions_lock:
+                server._sessions.clear()
+                server._sessions.update(original)
+
+    def test_heartbeat_records_client_ip_and_rejects_invalid_sid(self):
+        request = Request({
+            "type": "http",
+            "client": ("203.0.113.7", 4321),
+            "headers": [],
+        })
+        with server._sessions_lock:
+            original = dict(server._sessions)
+            server._sessions.clear()
+        try:
+            response = server.heartbeat({"sid": "test-session"}, request)
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(
+                server._online_sessions_snapshot()[1][0]["ip"],
+                "203.0.113.7",
+            )
+            invalid = server.heartbeat({"sid": []}, request)
+            self.assertEqual(invalid.status_code, 400)
+        finally:
+            with server._sessions_lock:
+                server._sessions.clear()
+                server._sessions.update(original)
+
     def test_admin_contains_status_filters_and_dirty_state(self):
         for element_id in (
             "system-ollama", "system-model", "system-jobs", "system-users",
-            "system-version", "stats-filter-kind", "stats-filter-status",
+            "system-version", "system-user-ips", "stats-filter-kind", "stats-filter-status",
             "stats-filter-search", "settings-dirty-badge",
         ):
             self.assertIn(f'id="{element_id}"', server.ADMIN_HTML)

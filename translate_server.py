@@ -82,7 +82,7 @@ DEFAULTS = {
 
 HOST = os.environ.get("INTERPRES_HOST", "0.0.0.0")
 PORT = int(os.environ.get("INTERPRES_PORT", "7860"))
-APP_VERSION = "1.22.1-beta.4"
+APP_VERSION = "1.22.1-beta.5"
 
 LANG_NAMES_UK = {
     "Arabic":     "Арабська",
@@ -377,7 +377,7 @@ async def basic_auth(request: Request, call_next):
 _active: dict[str, threading.Event] = {}
 _results: dict[str, tuple[str, bytes]] = {}
 _preview_cache: dict[str, bytes] = {}   # file_id -> HTML bytes from mammoth
-_sessions: dict[str, float] = {}        # session_id -> last_seen timestamp
+_sessions: dict[str, tuple[float, str]] = {}  # session_id -> (last_seen, client_ip)
 _SESSION_TTL = 45                       # seconds before a session is considered gone
 _sessions_lock = threading.Lock()
 
@@ -400,14 +400,32 @@ def _queue_worker():
 threading.Thread(target=_queue_worker, daemon=True).start()
 
 
-def _online_session_count(now: float | None = None) -> int:
+def _online_sessions_snapshot(now: float | None = None) -> tuple[int, list[dict]]:
     now = now or time.time()
     with _sessions_lock:
-        stale = [sid for sid, last_seen in _sessions.items()
+        stale = [sid for sid, (last_seen, _) in _sessions.items()
                  if now - last_seen > _SESSION_TTL]
         for sid in stale:
             _sessions.pop(sid, None)
-        return len(_sessions)
+
+        by_ip: dict[str, dict] = {}
+        for last_seen, client_ip in _sessions.values():
+            client = by_ip.setdefault(client_ip, {
+                "ip": client_ip,
+                "sessions": 0,
+                "last_seen_seconds": _SESSION_TTL + 1,
+            })
+            client["sessions"] += 1
+            client["last_seen_seconds"] = min(
+                client["last_seen_seconds"],
+                max(0, round(now - last_seen)),
+            )
+        clients = sorted(by_ip.values(), key=lambda item: item["ip"])
+        return len(_sessions), clients
+
+
+def _online_session_count(now: float | None = None) -> int:
+    return _online_sessions_snapshot(now)[0]
 
 
 def extract_text(filename: str, content: bytes) -> str:
@@ -2229,6 +2247,9 @@ ADMIN_HTML = r"""<!DOCTYPE html>
   .status-dot.ok { background:#16a34a; }
   .status-dot.err { background:#dc2626; }
   .system-message { min-height:18px; margin-top:9px; color:#6b7280; font-size:.78rem; }
+  .online-clients { display:flex; gap:12px; align-items:baseline; margin-top:10px; color:#374151; font-size:.8rem; }
+  .online-clients-label { flex:0 0 auto; color:#6b7280; font-weight:600; }
+  #system-user-ips { min-width:0; overflow-wrap:anywhere; font-family:monospace; }
   .stats-toolbar { display:grid; grid-template-columns:150px 150px minmax(180px, 1fr) auto; gap:8px; align-items:end; margin-bottom:10px; }
   .stats-toolbar label { margin:0; }
   .stats-count { color:#6b7280; font-size:.8rem; padding-bottom:9px; white-space:nowrap; }
@@ -2244,6 +2265,8 @@ ADMIN_HTML = r"""<!DOCTYPE html>
     #stats-summary { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
     .page-heading { align-items:flex-start; }
     .system-grid { grid-template-columns:repeat(2, minmax(0, 1fr)); }
+    .online-clients { display:block; }
+    #system-user-ips { margin-top:4px; }
     .stats-toolbar { grid-template-columns:1fr 1fr; }
     .stats-toolbar .stats-search { grid-column:1 / -1; }
   }
@@ -2282,6 +2305,10 @@ ADMIN_HTML = r"""<!DOCTYPE html>
       <div class="system-label">Версія</div>
       <div id="system-version" class="system-value">v__APP_VERSION__</div>
     </div>
+  </div>
+  <div class="online-clients">
+    <span class="online-clients-label">Активні IP-адреси</span>
+    <span id="system-user-ips">—</span>
   </div>
   <div id="system-message" class="system-message" role="status" aria-live="polite"></div>
 </div>
@@ -2547,6 +2574,10 @@ async function refreshSystemStatus(manual = false) {
     model.className = 'system-value ' + (data.model_available ? 'ok' : 'err');
     document.getElementById('system-jobs').textContent = `${data.active_jobs} активних · ${data.queued_jobs} у черзі`;
     document.getElementById('system-users').textContent = data.online_users;
+    const clients = Array.isArray(data.online_clients) ? data.online_clients : [];
+    document.getElementById('system-user-ips').textContent = clients.length
+      ? clients.map(client => `${client.ip} (${client.sessions})`).join(' · ')
+      : 'Немає активних підключень';
     document.getElementById('system-version').textContent = 'v' + data.version;
 
     if (!data.ollama_ok) {
@@ -2796,6 +2827,7 @@ def admin_status():
     except Exception as exc:
         error = str(exc)
 
+    online_users, online_clients = _online_sessions_snapshot()
     return JSONResponse({
         "version": APP_VERSION,
         "ollama_ok": ollama_ok,
@@ -2804,7 +2836,8 @@ def admin_status():
         "model": current_model,
         "model_available": current_model in models,
         "models_count": len(models),
-        "online_users": _online_session_count(),
+        "online_users": online_users,
+        "online_clients": online_clients,
         "active_jobs": len(_active),
         "queued_jobs": _job_queue.qsize(),
     })
@@ -3264,13 +3297,14 @@ def preview_file(file_id: str):
 
 
 @app.post("/heartbeat")
-def heartbeat(data: dict):
+def heartbeat(data: dict, request: Request):
     sid = data.get("sid", "")
-    if not sid:
+    if not isinstance(sid, str) or not 1 <= len(sid) <= 128:
         return JSONResponse({"online": 0}, status_code=400)
     now = time.time()
+    client_ip = request.client.host if request.client else "unknown"
     with _sessions_lock:
-        _sessions[sid] = now
+        _sessions[sid] = (now, client_ip)
     return JSONResponse({"online": _online_session_count(now)})
 
 
