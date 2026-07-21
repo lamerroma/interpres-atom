@@ -86,7 +86,7 @@ DEFAULTS = {
 
 HOST = os.environ.get("INTERPRES_HOST", "0.0.0.0")
 PORT = int(os.environ.get("INTERPRES_PORT", "7860"))
-APP_VERSION = "1.22.1-beta.10"
+APP_VERSION = "1.22.1"
 
 LANG_NAMES_UK = {
     "Arabic":     "Арабська",
