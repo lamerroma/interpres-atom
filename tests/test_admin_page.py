@@ -2,6 +2,7 @@ import re
 import json
 import time
 import unittest
+import subprocess
 from unittest.mock import Mock, patch
 
 from fastapi import Request
@@ -92,6 +93,7 @@ class AdminPageTests(unittest.TestCase):
         self.assertTrue(payload["model_available"])
         self.assertEqual(payload["version"], server.APP_VERSION)
         self.assertIn("online_clients", payload)
+        self.assertIn("gpu", payload)
         self.assertIn("active_jobs", payload)
         self.assertIn("queued_jobs", payload)
 
@@ -166,10 +168,30 @@ class AdminPageTests(unittest.TestCase):
                 server._sessions.clear()
                 server._sessions.update(original)
 
+    @patch.object(server.subprocess, "run")
+    def test_gpu_status_parses_nvidia_smi_output(self, run):
+        run.return_value = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout="0, NVIDIA RTX 4090, 72, 10240, 24564, 61, 318.5\n",
+            stderr="",
+        )
+
+        status = server._gpu_status()
+
+        self.assertTrue(status["available"])
+        self.assertEqual(status["gpus"][0]["utilization_percent"], 72.0)
+        self.assertEqual(status["gpus"][0]["memory_used_mib"], 10240.0)
+
+    @patch.object(server.subprocess, "run", side_effect=FileNotFoundError())
+    def test_gpu_status_is_optional(self, _run):
+        self.assertFalse(server._gpu_status()["available"])
+
     def test_admin_contains_status_filters_and_dirty_state(self):
         for element_id in (
             "system-ollama", "system-model", "system-jobs", "system-users",
-            "system-version", "system-user-ips", "stats-filter-kind", "stats-filter-status",
+            "system-version", "system-gpu", "system-user-ips",
+            "stats-filter-kind", "stats-filter-status",
             "stats-filter-search", "settings-dirty-badge",
         ):
             self.assertIn(f'id="{element_id}"', server.ADMIN_HTML)

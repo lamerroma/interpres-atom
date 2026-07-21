@@ -1,4 +1,5 @@
 import io
+import csv
 import json
 import os
 import sqlite3
@@ -11,6 +12,7 @@ import queue as _queue_mod
 import secrets
 import base64
 import time
+import subprocess
 from urllib.parse import quote
 
 # ── Dependency check ─────────────────────────────────────────────────────────
@@ -82,7 +84,7 @@ DEFAULTS = {
 
 HOST = os.environ.get("INTERPRES_HOST", "0.0.0.0")
 PORT = int(os.environ.get("INTERPRES_PORT", "7860"))
-APP_VERSION = "1.22.1-beta.6"
+APP_VERSION = "1.22.1-beta.7"
 
 LANG_NAMES_UK = {
     "Arabic":     "Арабська",
@@ -426,6 +428,50 @@ def _online_sessions_snapshot(now: float | None = None) -> tuple[int, list[dict]
 
 def _online_session_count(now: float | None = None) -> int:
     return _online_sessions_snapshot(now)[0]
+
+
+def _gpu_status() -> dict:
+    query = (
+        "index,name,utilization.gpu,memory.used,memory.total,"
+        "temperature.gpu,power.draw"
+    )
+    try:
+        result = subprocess.run(
+            [
+                "nvidia-smi",
+                f"--query-gpu={query}",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=2,
+        )
+        gpus = []
+        for row in csv.reader(result.stdout.splitlines(), skipinitialspace=True):
+            if len(row) != 7:
+                continue
+            index, name, utilization, memory_used, memory_total, temp, power = row
+            def number(value: str) -> float | None:
+                try:
+                    return float(value)
+                except ValueError:
+                    return None
+
+            gpus.append({
+                "index": int(index),
+                "name": name,
+                "utilization_percent": number(utilization),
+                "memory_used_mib": number(memory_used),
+                "memory_total_mib": number(memory_total),
+                "temperature_c": number(temp),
+                "power_w": number(power),
+            })
+        if not gpus:
+            return {"available": False, "gpus": [], "error": "No GPU data"}
+        return {"available": True, "gpus": gpus, "error": None}
+    except (OSError, subprocess.SubprocessError, ValueError) as exc:
+        return {"available": False, "gpus": [], "error": str(exc)}
 
 
 def extract_text(filename: str, content: bytes) -> str:
@@ -2245,7 +2291,7 @@ ADMIN_HTML = r"""<!DOCTYPE html>
   button:disabled { opacity: .6; cursor: wait; }
   .page-heading { display:flex; align-items:center; justify-content:space-between; gap:16px; margin-bottom:16px; }
   .page-subtitle { color:#6b7280; font-size:.85rem; margin-top:4px; }
-  .system-grid { display:grid; grid-template-columns:repeat(5, minmax(0, 1fr)); gap:1px; background:#e5e7eb; border:1px solid #e5e7eb; border-radius:7px; overflow:hidden; }
+  .system-grid { display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:1px; background:#e5e7eb; border:1px solid #e5e7eb; border-radius:7px; overflow:hidden; }
   .system-metric { min-width:0; background:#fff; padding:12px 14px; }
   .system-label { color:#6b7280; font-size:.72rem; text-transform:uppercase; }
   .system-value { color:#111827; font-size:.95rem; font-weight:600; margin-top:5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -2308,6 +2354,10 @@ ADMIN_HTML = r"""<!DOCTYPE html>
     <div class="system-metric">
       <div class="system-label">Користувачі онлайн</div>
       <div id="system-users" class="system-value">—</div>
+    </div>
+    <div class="system-metric">
+      <div class="system-label">GPU</div>
+      <div id="system-gpu" class="system-value">Перевіряю...</div>
     </div>
     <div class="system-metric">
       <div class="system-label">Версія</div>
@@ -2586,6 +2636,24 @@ async function refreshSystemStatus(manual = false) {
     document.getElementById('system-user-ips').textContent = clients.length
       ? clients.map(client => `${client.ip} (${client.sessions})`).join(' · ')
       : 'Немає активних підключень';
+    const gpuElement = document.getElementById('system-gpu');
+    const gpus = data.gpu && Array.isArray(data.gpu.gpus) ? data.gpu.gpus : [];
+    if (data.gpu && data.gpu.available && gpus.length) {
+      gpuElement.textContent = gpus.map(gpu => {
+        const load = gpu.utilization_percent == null ? 'n/a' : `${gpu.utilization_percent}%`;
+        const used = gpu.memory_used_mib == null ? '?' : (gpu.memory_used_mib / 1024).toFixed(1);
+        const total = gpu.memory_total_mib == null ? '?' : (gpu.memory_total_mib / 1024).toFixed(1);
+        const temp = gpu.temperature_c == null ? 'n/a' : `${gpu.temperature_c}°C`;
+        const power = gpu.power_w == null ? 'n/a' : `${gpu.power_w} W`;
+        return `${load} · ${used}/${total} GB · ${temp} · ${power}`;
+      }).join(' | ');
+      gpuElement.title = gpus.map(gpu => `GPU ${gpu.index}: ${gpu.name}`).join('\n');
+      gpuElement.className = 'system-value ok';
+    } else {
+      gpuElement.textContent = 'Недоступно';
+      gpuElement.title = data.gpu?.error || '';
+      gpuElement.className = 'system-value';
+    }
     document.getElementById('system-version').textContent = 'v' + data.version;
 
     if (!data.ollama_ok) {
@@ -2836,6 +2904,7 @@ def admin_status():
         error = str(exc)
 
     online_users, online_clients = _online_sessions_snapshot()
+    gpu = _gpu_status()
     return JSONResponse({
         "version": APP_VERSION,
         "ollama_ok": ollama_ok,
@@ -2846,6 +2915,7 @@ def admin_status():
         "models_count": len(models),
         "online_users": online_users,
         "online_clients": online_clients,
+        "gpu": gpu,
         "active_jobs": len(_active),
         "queued_jobs": _job_queue.qsize(),
     })
