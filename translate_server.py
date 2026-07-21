@@ -53,7 +53,7 @@ if _missing_opt:
 import requests as req_lib
 from fastapi import FastAPI, UploadFile, File, Form, Request
 from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s %(levelname)s %(message)s')
@@ -82,7 +82,7 @@ DEFAULTS = {
 
 HOST = os.environ.get("INTERPRES_HOST", "0.0.0.0")
 PORT = int(os.environ.get("INTERPRES_PORT", "7860"))
-APP_VERSION = "1.22.1-beta.1"
+APP_VERSION = "1.22.1-beta.2"
 
 LANG_NAMES_UK = {
     "Arabic":     "Арабська",
@@ -2205,6 +2205,16 @@ ADMIN_HTML = r"""<!DOCTYPE html>
   .format-tab { background: #f3f4f6; border: 1px solid #e5e7eb; border-radius: 6px; padding: 6px 18px; font-size: .875rem; color: #374151; cursor: pointer; transition: all .15s; }
   .format-tab:hover { background: #e5e7eb; }
   .format-tab.active { background: #2563eb; color: white; border-color: #2563eb; }
+  button:disabled { opacity: .6; cursor: wait; }
+  @media (max-width: 700px) {
+    body { padding: 14px; }
+    .card { padding: 14px; }
+    .settings-grid { grid-template-columns: 1fr; }
+    .settings-grid .full { grid-column: auto; }
+    .format-tabs { overflow-x: auto; padding-bottom: 4px; }
+    .format-tab { flex: 0 0 auto; padding: 6px 14px; }
+    #stats-summary { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
+  }
 </style>
 </head>
 <body>
@@ -2256,19 +2266,19 @@ ADMIN_HTML = r"""<!DOCTYPE html>
         <div class="settings-grid">
           <div class="full">
             <label>Ollama URL</label>
-            <input type="text" id="cfg_base_url" placeholder="http://127.0.0.1:11434/v1">
+            <input type="text" id="cfg_base_url" placeholder="http://127.0.0.1:11434/v1" required>
           </div>
           <div class="full">
             <label>Модель</label>
-            <input type="text" id="cfg_model" placeholder="назва моделі">
+            <input type="text" id="cfg_model" placeholder="назва моделі" required>
           </div>
           <div>
             <label>Макс. токенів</label>
-            <input type="number" id="cfg_max_tokens" min="128" max="32000" step="128">
+            <input type="number" id="cfg_max_tokens" min="128" max="32000" step="128" required>
           </div>
           <div>
             <label>Таймаут LLM (секунди)</label>
-            <input type="number" id="cfg_llm_timeout" min="10" max="600">
+            <input type="number" id="cfg_llm_timeout" min="10" max="600" required>
           </div>
         </div>
       </div>
@@ -2281,11 +2291,11 @@ ADMIN_HTML = r"""<!DOCTYPE html>
         <div class="settings-grid">
           <div>
             <label>Temperature (0 — точно, 2 — творчо)</label>
-            <input type="number" id="cfg_temperature" min="0" max="2" step="0.05">
+            <input type="number" id="cfg_temperature" min="0" max="2" step="0.05" required>
           </div>
           <div>
             <label>Повторів при помилці (retry)</label>
-            <input type="number" id="cfg_retry" min="1" max="6" step="1">
+            <input type="number" id="cfg_retry" min="1" max="6" step="1" required>
           </div>
           <div class="full">
             <label>Кастомна інструкція перекладу (необов'язково)</label>
@@ -2322,11 +2332,11 @@ ADMIN_HTML = r"""<!DOCTYPE html>
           </div>
           <div class="full">
             <label>Розмір чанка (символів на запит до моделі)</label>
-            <input type="number" id="cfg_chunk_size" min="500" max="20000" step="100">
+            <input type="number" id="cfg_chunk_size" min="500" max="20000" step="100" required>
           </div>
           <div class="full">
             <label>Макс. символів файлу (DOCX / PPTX / XLSX / TXT)</label>
-            <input type="number" id="cfg_max_chars" min="1000" max="1000000" step="1000">
+            <input type="number" id="cfg_max_chars" min="1000" max="1000000" step="1000" required>
           </div>
         </div>
         <!-- PPTX -->
@@ -2345,7 +2355,7 @@ ADMIN_HTML = r"""<!DOCTYPE html>
         <div id="format-tab-pdf" class="settings-grid" style="display:none">
           <div>
             <label>Макс. сторінок PDF</label>
-            <input type="number" id="cfg_max_pdf_pages" min="1" max="500" step="1">
+            <input type="number" id="cfg_max_pdf_pages" min="1" max="500" step="1" required>
           </div>
         </div>
         <!-- TXT -->
@@ -2358,9 +2368,9 @@ ADMIN_HTML = r"""<!DOCTYPE html>
     </div>
 
     <div class="btn-row" style="margin-top:16px;">
-      <button class="btn-save" onclick="saveSettings()">Зберегти</button>
-      <button onclick="resetSettings()" style="background:#6b7280;">Скинути до стандартних</button>
-      <span class="status" id="cfg-status"></span>
+      <button id="btn-save-settings" class="btn-save" onclick="saveSettings()">Зберегти</button>
+      <button id="btn-reset-settings" onclick="resetSettings()" style="background:#6b7280;">Скинути до стандартних</button>
+      <span class="status" id="cfg-status" role="status" aria-live="polite"></span>
     </div>
   </details>
 </div>
@@ -2368,6 +2378,48 @@ ADMIN_HTML = r"""<!DOCTYPE html>
 <div class="footer">Interpres-Atom v__APP_VERSION__</div>
 
 <script>
+let cfgStatusTimer = null;
+
+function escapeHtml(value) {
+  const chars = {'&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'};
+  return String(value ?? '').replace(/[&<>"']/g, ch => chars[ch]);
+}
+
+function apiErrorMessage(data, status) {
+  if (Array.isArray(data?.detail)) {
+    return data.detail.map(item => {
+      const field = Array.isArray(item.loc) ? item.loc[item.loc.length - 1] : 'поле';
+      return `${field}: ${item.msg}`;
+    }).join('; ');
+  }
+  return data?.error || data?.detail || `HTTP ${status}`;
+}
+
+async function fetchJson(url, options) {
+  const response = await fetch(url, options);
+  const text = await response.text();
+  let data = {};
+  if (text) {
+    try { data = JSON.parse(text); }
+    catch { throw new Error(`Некоректна відповідь сервера (HTTP ${response.status})`); }
+  }
+  if (!response.ok) throw new Error(apiErrorMessage(data, response.status));
+  return data;
+}
+
+function setConfigStatus(text, type = '', clearAfter = 0) {
+  const status = document.getElementById('cfg-status');
+  clearTimeout(cfgStatusTimer);
+  status.textContent = text;
+  status.className = 'status' + (type ? ' ' + type : '');
+  if (clearAfter) {
+    cfgStatusTimer = setTimeout(() => {
+      status.textContent = '';
+      status.className = 'status';
+    }, clearAfter);
+  }
+}
+
 function toggleSeparator() {
   const mode = document.getElementById('cfg_insert_mode').value;
   document.getElementById('cfg_separator_row').style.display = (mode === 'replace') ? 'none' : '';
@@ -2398,11 +2450,22 @@ function applyCfg(cfg) {
 }
 
 async function loadSettings() {
-  const r = await fetch('/config');
-  applyCfg(await r.json());
+  try {
+    applyCfg(await fetchJson('/config'));
+  } catch (error) {
+    setConfigStatus('Не вдалося завантажити налаштування: ' + error.message, 'err');
+  }
 }
 
 async function saveSettings() {
+  const invalid = [...document.querySelectorAll('#settings-details input[required]')]
+    .find(input => !input.checkValidity());
+  if (invalid) {
+    invalid.reportValidity();
+    setConfigStatus('Перевірте виділене поле', 'err');
+    return;
+  }
+
   const cfg = {
     base_url:      document.getElementById('cfg_base_url').value.trim(),
     model:         document.getElementById('cfg_model').value.trim(),
@@ -2417,25 +2480,39 @@ async function saveSettings() {
     separator:     document.getElementById('cfg_separator').value,
     custom_prompt: document.getElementById('cfg_custom_prompt').value,
   };
-  const st = document.getElementById('cfg-status');
+  const button = document.getElementById('btn-save-settings');
+  button.disabled = true;
+  setConfigStatus('Зберігаю...');
   try {
-    const r = await fetch('/config', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(cfg) });
-    const res = await r.json();
-    if (res.ok) { st.textContent = 'Збережено'; st.className = 'status ok'; }
-    else        { st.textContent = 'Помилка: ' + (res.error ?? 'невідома'); st.className = 'status err'; }
-  } catch(e) { st.textContent = 'Помилка: ' + e; st.className = 'status err'; }
-  setTimeout(() => { st.textContent = ''; st.className = 'status'; }, 3000);
+    await fetchJson('/config', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(cfg),
+    });
+    setConfigStatus('Збережено', 'ok', 3000);
+  } catch (error) {
+    setConfigStatus('Помилка: ' + error.message, 'err');
+  } finally {
+    button.disabled = false;
+  }
 }
 
 async function resetSettings() {
-  const r = await fetch('/config/defaults');
-  applyCfg(await r.json());
+  const button = document.getElementById('btn-reset-settings');
+  button.disabled = true;
+  try {
+    applyCfg(await fetchJson('/config/defaults'));
+    setConfigStatus('Стандартні значення завантажено. Натисніть «Зберегти».', 'ok');
+  } catch (error) {
+    setConfigStatus('Помилка: ' + error.message, 'err');
+  } finally {
+    button.disabled = false;
+  }
 }
 
 async function loadStats() {
   try {
-    const r = await fetch('/admin/stats?limit=100');
-    const d = await r.json();
+    const d = await fetchJson('/admin/stats?limit=100');
     const s = d.summary || {};
     const cards = [
       ['Всього', s.total ?? 0], ['Успішно', s.success ?? 0],
@@ -2445,35 +2522,39 @@ async function loadStats() {
     ];
     document.getElementById('stats-summary').innerHTML = cards.map(([k, v]) =>
       `<div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; padding:10px;">
-         <div style="font-size:.7rem; color:#64748b; text-transform:uppercase;">${k}</div>
-         <div style="font-size:1.2rem; font-weight:600; color:#1e293b; margin-top:2px;">${v}</div>
+         <div style="font-size:.7rem; color:#64748b; text-transform:uppercase;">${escapeHtml(k)}</div>
+         <div style="font-size:1.2rem; font-weight:600; color:#1e293b; margin-top:2px;">${escapeHtml(v)}</div>
        </div>`).join('');
     const sc = { success:'#16a34a', error:'#dc2626', stopped:'#f59e0b' };
     const rows = (d.recent || []).map(r => {
       const t = (r.timestamp||'').replace('T',' ').slice(5,19);
       return `<tr>
-        <td style="padding:5px 8px; border-bottom:1px solid #f1f5f9;">${t}</td>
-        <td style="padding:5px 8px; border-bottom:1px solid #f1f5f9;">${r.ip||''}</td>
-        <td style="padding:5px 8px; border-bottom:1px solid #f1f5f9;">${r.kind||''}</td>
-        <td style="padding:5px 8px; border-bottom:1px solid #f1f5f9; max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${r.filename||''}</td>
-        <td style="padding:5px 8px; border-bottom:1px solid #f1f5f9;">${r.lang_from||''}→${r.lang_to||''}</td>
-        <td style="padding:5px 8px; border-bottom:1px solid #f1f5f9; text-align:right;">${r.chars??''}</td>
-        <td style="padding:5px 8px; border-bottom:1px solid #f1f5f9; text-align:right;">${r.pages??''}</td>
-        <td style="padding:5px 8px; border-bottom:1px solid #f1f5f9; text-align:right;">${r.duration??''}</td>
-        <td style="padding:5px 8px; border-bottom:1px solid #f1f5f9; color:${sc[r.status]||'#64748b'}; font-weight:500;">${r.status}</td>
-        <td style="padding:5px 8px; border-bottom:1px solid #f1f5f9; color:#dc2626; max-width:250px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${(r.error||'').replace(/"/g,'&quot;')}">${r.error||''}</td>
+        <td style="padding:5px 8px; border-bottom:1px solid #f1f5f9;">${escapeHtml(t)}</td>
+        <td style="padding:5px 8px; border-bottom:1px solid #f1f5f9;">${escapeHtml(r.ip)}</td>
+        <td style="padding:5px 8px; border-bottom:1px solid #f1f5f9;">${escapeHtml(r.kind)}</td>
+        <td style="padding:5px 8px; border-bottom:1px solid #f1f5f9; max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(r.filename)}</td>
+        <td style="padding:5px 8px; border-bottom:1px solid #f1f5f9;">${escapeHtml(r.lang_from)}→${escapeHtml(r.lang_to)}</td>
+        <td style="padding:5px 8px; border-bottom:1px solid #f1f5f9; text-align:right;">${escapeHtml(r.chars)}</td>
+        <td style="padding:5px 8px; border-bottom:1px solid #f1f5f9; text-align:right;">${escapeHtml(r.pages)}</td>
+        <td style="padding:5px 8px; border-bottom:1px solid #f1f5f9; text-align:right;">${escapeHtml(r.duration)}</td>
+        <td style="padding:5px 8px; border-bottom:1px solid #f1f5f9; color:${sc[r.status]||'#64748b'}; font-weight:500;">${escapeHtml(r.status)}</td>
+        <td style="padding:5px 8px; border-bottom:1px solid #f1f5f9; color:#dc2626; max-width:250px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${escapeHtml(r.error)}">${escapeHtml(r.error)}</td>
       </tr>`;
     }).join('');
     document.getElementById('stats-tbody').innerHTML = rows || '<tr><td colspan="10" style="padding:20px; text-align:center; color:#94a3b8;">Немає даних</td></tr>';
   } catch(e) {
-    document.getElementById('stats-tbody').innerHTML = `<tr><td colspan="10" style="padding:10px; color:#dc2626;">Помилка: ${e}</td></tr>`;
+    document.getElementById('stats-tbody').innerHTML = `<tr><td colspan="10" style="padding:10px; color:#dc2626;">Помилка: ${escapeHtml(e.message || e)}</td></tr>`;
   }
 }
 
 async function clearStats() {
   if (!confirm('Видалити всю статистику?')) return;
-  await fetch('/admin/stats/clear', { method: 'POST' });
-  loadStats();
+  try {
+    await fetchJson('/admin/stats/clear', { method: 'POST' });
+    await loadStats();
+  } catch (error) {
+    document.getElementById('stats-tbody').innerHTML = `<tr><td colspan="10" style="padding:10px; color:#dc2626;">Помилка: ${escapeHtml(error.message)}</td></tr>`;
+  }
 }
 
 document.getElementById('stats-details').addEventListener('toggle', e => {
@@ -2496,6 +2577,24 @@ class TranslateHtmlRequest(BaseModel):
     html: str
     lang_from: str = "auto"
     lang_to: str
+
+
+class ConfigUpdate(BaseModel):
+    base_url: str = Field(min_length=1, max_length=2048)
+    model: str = Field(min_length=1, max_length=256)
+    max_tokens: int = Field(ge=128, le=32000)
+    llm_timeout: int = Field(ge=10, le=600)
+    chunk_size: int = Field(ge=500, le=20000)
+    max_pdf_pages: int = Field(ge=1, le=500)
+    max_chars: int = Field(ge=1000, le=1000000)
+    temperature: float = Field(ge=0, le=2)
+    retry: int = Field(ge=1, le=6)
+    insert_mode: str = Field(pattern="^(replace|append|prepend)$")
+    separator: str = Field(max_length=100)
+    custom_prompt: str = Field(max_length=10000)
+
+    class Config:
+        extra = "forbid"
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -2561,13 +2660,10 @@ def get_defaults():
 
 
 @app.post("/config")
-def post_config(data: dict):
+def post_config(data: ConfigUpdate):
     global CFG
-    allowed = set(DEFAULTS.keys())
-    for key in list(data.keys()):
-        if key not in allowed:
-            return JSONResponse({"ok": False, "error": f"Unknown key: {key}"}, status_code=400)
-    CFG = {**CFG, **data}
+    updates = data.model_dump()
+    CFG = {**CFG, **updates}
     try:
         save_config(CFG)
     except Exception as e:
