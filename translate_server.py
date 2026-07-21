@@ -61,6 +61,7 @@ import requests as req_lib
 import bleach
 from fastapi import FastAPI, UploadFile, File, Form, Request
 from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse, Response
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
 logging.basicConfig(level=logging.INFO,
@@ -69,7 +70,8 @@ log = logging.getLogger("translator")
 
 # ── Configuration ────────────────────────────────────────────────────────────
 
-CONFIG_FILE = os.path.join(os.path.dirname(__file__), "translator_config.json")
+BASE_DIR = os.path.dirname(__file__)
+CONFIG_FILE = os.path.join(BASE_DIR, "translator_config.json")
 
 DEFAULTS = {
     "base_url":        "http://127.0.0.1:11434/v1",
@@ -91,7 +93,7 @@ DEFAULTS = {
 
 HOST = os.environ.get("INTERPRES_HOST", "0.0.0.0")
 PORT = int(os.environ.get("INTERPRES_PORT", "7860"))
-APP_VERSION = "1.22.2-beta.4"
+APP_VERSION = "1.22.2-beta.5"
 
 LANG_NAMES_UK = {
     "Arabic":     "Арабська",
@@ -378,6 +380,11 @@ init_stats_db()
 # ─────────────────────────────────────────────────────────────────────────────
 
 app = FastAPI()
+app.mount(
+    "/static",
+    StaticFiles(directory=os.path.join(BASE_DIR, "static")),
+    name="static",
+)
 
 
 ADMIN_PATHS = ("/admin", "/config")
@@ -1654,8 +1661,8 @@ USER_HTML = r"""<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Interpres-Atom</title>
-<script src="https://cdn.jsdelivr.net/npm/marked@15.0.12/marked.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/dompurify@3.2.6/dist/purify.min.js"></script>
+<script src="/static/vendor/marked.min.js"></script>
+<script src="/static/vendor/purify.min.js"></script>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   :root {
@@ -1919,7 +1926,7 @@ USER_HTML = r"""<!DOCTYPE html>
   @media (max-width: 640px) {
     .split-layout { grid-template-columns: 1fr; }
   }
-  .split-panel { display: flex; flex-direction: column; min-width: 0; overflow: hidden; }
+  .split-panel { display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
   .panel-label {
     font-size: 0.8rem; color: var(--muted); font-weight: 500;
     margin-bottom: 8px; display: flex; align-items: center; gap: 8px; min-height: 22px;
@@ -1981,16 +1988,126 @@ USER_HTML = r"""<!DOCTYPE html>
   .help-box .close-help:hover { color: var(--text); }
   .help-section { margin-bottom: 18px; }
   .help-section h3 { font-size: 0.85rem; font-weight: 600; color: var(--text); margin-bottom: 6px; text-transform: uppercase; letter-spacing: .04em; }
+
+  /* Desktop workspace */
+  body { height: 100vh; padding: 0 22px 10px; background: #f4f6f8; overflow: hidden; }
+  .container {
+    width: 100%; max-width: 1560px; height: 100%; margin: 0 auto;
+    display: flex; flex-direction: column; min-height: 0;
+  }
+  header {
+    min-height: 72px; margin: 0 0 14px; padding: 14px 2px;
+    align-items: center; border-bottom: 1px solid var(--border);
+  }
+  .brand-lockup { display: flex; align-items: center; gap: 12px; min-width: 0; }
+  .brand-mark {
+    width: 38px; height: 38px; display: grid; place-items: center; flex: 0 0 auto;
+    border-radius: 8px; background: #17365d; color: white;
+    font-size: 0.78rem; font-weight: 700;
+  }
+  .brand-copy { min-width: 0; }
+  header h1 { font-size: 1.28rem; line-height: 1.25; font-weight: 650; }
+  header p { margin-top: 1px; font-size: 0.8rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .header-tools { display: flex; align-items: center; gap: 8px; }
+  .btn-help { width: 30px; height: 30px; border-width: 1px; border-radius: 6px; background: var(--card); }
+  .online-badge { min-height: 30px; border-radius: 6px; padding: 4px 9px; background: var(--card); }
+
+  .card { border-radius: 8px; padding: 16px 18px; margin-bottom: 12px; box-shadow: 0 1px 2px rgba(15,23,42,.04); }
+  .language-card { display: block; }
+  .lang-bar { gap: 9px; }
+  .lang-bar label { margin-bottom: 4px; font-size: 0.72rem; text-transform: uppercase; font-weight: 650; }
+  .lang-bar select { height: 38px; padding: 7px 10px; border-radius: 6px; font-size: 0.9rem; }
+  .swap-btn { width: 38px; height: 38px; border-radius: 6px; }
+  .model-bar { margin: 9px 0 0; justify-content: flex-start; min-width: 0; }
+  .conn-status { max-width: 100%; }
+
+  .workspace-card {
+    padding: 0; overflow: hidden; flex: 1 1 auto; min-height: 0;
+    display: flex; flex-direction: column;
+  }
+  .tabs {
+    width: 100%; margin: 0; padding: 12px 18px 10px; gap: 4px;
+    background: transparent; border-radius: 0;
+  }
+  .tab { padding: 8px 14px; border-radius: 5px; font-size: 0.86rem; border: 1px solid transparent; }
+  .tab:hover { color: var(--text); background: #f1f5f9; }
+  .tab.active { color: var(--primary); background: var(--primary-light); border-color: #bfdbfe; box-shadow: none; }
+  .panel.active {
+    border-top: 1px solid var(--border); padding: 16px 18px 18px;
+    flex: 1 1 auto; min-height: 0; overflow-y: auto;
+  }
+  #panel-text.active { overflow: hidden; }
+
+  .split-layout {
+    height: 100%; gap: 14px; align-items: stretch;
+    grid-template-rows: minmax(0, 1fr) auto;
+  }
+  .split-panel { min-height: 0; }
+  .panel-label {
+    justify-content: space-between; min-height: 26px; margin-bottom: 5px;
+    color: #475569; font-size: 0.75rem; font-weight: 650;
+  }
+  .panel-counter { color: var(--muted); font-weight: 400; font-variant-numeric: tabular-nums; }
+  .rich-editor, .result-content {
+    flex: 1 1 auto; height: auto; min-height: 120px; max-height: none; padding: 16px;
+    border-radius: 6px; font-size: 0.94rem; line-height: 1.58;
+    overflow-y: auto;
+  }
+  .rich-editor { background: #ffffff; }
+  .result-content { background: #fafbfc; }
+  .rich-editor:focus { box-shadow: 0 0 0 2px var(--primary-light); }
+  .panel-tools { display: flex; align-items: center; gap: 6px; }
+  .icon-button {
+    width: 28px; height: 26px; display: grid; place-items: center;
+    border: 1px solid var(--border); border-radius: 5px; background: var(--card);
+    color: var(--muted); cursor: pointer; font-size: 0.9rem;
+  }
+  .icon-button:hover { border-color: #94a3b8; color: var(--text); background: #f8fafc; }
+  .actions { min-height: 42px; margin-top: 10px; gap: 8px; }
+  .text-actions { grid-column: 1 / -1; margin-top: -4px; }
+  button.primary, .download-link, button.stop, button.preview-btn { min-height: 38px; padding: 8px 17px; border-radius: 6px; font-size: 0.88rem; }
+  button.secondary { min-height: 38px; padding: 7px 14px; border-radius: 6px; font-size: 0.88rem; }
+  .status { min-width: 0; }
+
+  .drop-zone { padding: 28px 20px; border-radius: 6px; }
+  .drop-zone.has-file { padding: 14px 16px; }
+  .file-progress-bar { height: 6px; }
+  .file-log-box, .file-task-id { border-radius: 6px; }
+  .footer { flex: 0 0 auto; margin-top: 8px; padding-bottom: 2px; }
+
+  @media (max-width: 1099px) {
+    body { padding-inline: 14px; }
+    .model-bar { justify-content: flex-start; }
+    .split-layout {
+      grid-template-columns: 1fr;
+      grid-template-rows: minmax(0, 1fr) minmax(0, 1fr) auto;
+    }
+    .rich-editor, .result-content { min-height: 80px; }
+    .file-stats { flex-wrap: wrap; }
+    .stat-cell { min-width: 33.333%; border-bottom: none; }
+  }
+
+  @media (max-width: 720px) {
+    body { padding-inline: 10px; }
+    header p { max-width: 330px; }
+    .online-badge { padding-inline: 7px; }
+    .language-card, .panel.active { padding-inline: 12px; }
+    .tabs { width: 100%; padding-inline: 12px; }
+    .lang-bar { grid-template-columns: minmax(0, 1fr) 36px minmax(0, 1fr); }
+  }
 </style>
 </head>
 <body>
 <div class="container">
   <header>
-    <div>
-      <h1>Interpres-Atom</h1>
-      <p>Автономний переклад текстів та документів</p>
+    <div class="brand-lockup">
+      <div class="brand-mark" aria-hidden="true">IA</div>
+      <div class="brand-copy">
+        <h1>Interpres-Atom</h1>
+        <p>Автономний переклад текстів та документів</p>
+      </div>
     </div>
-    <div style="display:flex;align-items:center;gap:10px;">
+    <div class="header-tools">
       <button class="btn-help" onclick="openHelp()" title="Довідка">?</button>
       <span class="online-badge" id="online-badge" title="Користувачів онлайн">
         <span class="online-dot"></span>
@@ -2056,7 +2173,7 @@ USER_HTML = r"""<!DOCTYPE html>
     </div>
   </div>
 
-  <div class="card">
+  <div class="card language-card">
     <div class="lang-bar">
       <div>
         <label>З мови</label>
@@ -2072,12 +2189,11 @@ USER_HTML = r"""<!DOCTYPE html>
       <div class="conn-status">
         <span class="conn-dot" id="conn-dot"></span>
         <span id="conn-text">Перевірка...</span>
-        <span id="model-name" style="display:none;">· використовується мовна модель <strong id="model-name-val"></strong></span>
       </div>
     </div>
   </div>
 
-  <div class="card">
+  <div class="card workspace-card">
     <div class="tabs">
       <button class="tab active" onclick="showTab('text')">Текст</button>
       <button class="tab" onclick="showTab('file')">Файл</button>
@@ -2086,23 +2202,33 @@ USER_HTML = r"""<!DOCTYPE html>
     <div id="panel-text" class="panel active">
       <div class="split-layout">
         <div class="split-panel">
-          <div class="panel-label">Оригінал</div>
+          <div class="panel-label">
+            <span>Оригінал</span>
+            <span class="panel-tools">
+              <span id="char-counter" class="panel-counter"></span>
+              <button class="icon-button" onclick="pasteInput()" title="Вставити з буфера" aria-label="Вставити з буфера">&#128203;</button>
+            </span>
+          </div>
           <div id="input" class="rich-editor" contenteditable="true" spellcheck="false"
                data-gramm="false" data-placeholder="Введіть текст для перекладу..."></div>
-          <div id="char-counter" style="font-size:0.78rem;color:var(--muted);text-align:right;margin-top:4px;min-height:1.2em;line-height:1.2;"></div>
-          <div class="actions">
-            <button id="btn-translate" class="primary" onclick="doTranslate()">Перекласти</button>
-            <button id="btn-stop" class="stop" onclick="doStop()">Зупинити</button>
-            <button class="secondary" style="display:inline-flex;" onclick="clearInput()">Очистити</button>
-            <span class="spinner" id="text-spinner"></span>
-            <span class="status" id="text-status"></span>
-          </div>
         </div>
         <div class="split-panel">
-          <div class="panel-label" id="result-label">Переклад</div>
+          <div class="panel-label" id="result-label">
+            <span>Переклад</span>
+            <span class="panel-tools">
+              <button class="icon-button" onclick="copyResult()" title="Копіювати переклад" aria-label="Копіювати переклад">&#10697;</button>
+            </span>
+          </div>
           <div id="result" class="result-content">
             <div class="result-placeholder">Переклад з'явиться тут...</div>
           </div>
+        </div>
+        <div class="actions text-actions">
+          <button id="btn-translate" class="primary" onclick="doTranslate()">Перекласти</button>
+          <button id="btn-stop" class="stop" onclick="doStop()">Зупинити</button>
+          <button class="secondary" style="display:inline-flex;" onclick="clearInput()">Очистити</button>
+          <span class="spinner" id="text-spinner"></span>
+          <span class="status" id="text-status"></span>
         </div>
       </div>
     </div>
@@ -2319,6 +2445,50 @@ function clearInput() {
   el.focus();
   const result = document.getElementById('result');
   result.innerHTML = '<div class="result-placeholder">Переклад з\'явиться тут...</div>';
+}
+
+async function copyResult() {
+  const result = document.getElementById('result');
+  const text = result.textContent.trim();
+  if (!text || result.querySelector('.result-placeholder')) return;
+  try {
+    if (!navigator.clipboard?.writeText) throw new Error('Clipboard API unavailable');
+    await navigator.clipboard.writeText(text);
+    setStatus('text-status', 'Переклад скопійовано', 'success');
+  } catch {
+    const selection = window.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(result);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    const copied = document.execCommand('copy');
+    selection.removeAllRanges();
+    setStatus(
+      'text-status',
+      copied ? 'Переклад скопійовано' : 'Не вдалося скопіювати',
+      copied ? 'success' : 'error'
+    );
+  }
+}
+
+async function pasteInput() {
+  const input = document.getElementById('input');
+  input.focus();
+  try {
+    if (!navigator.clipboard?.readText) throw new Error('Clipboard API unavailable');
+    const text = await navigator.clipboard.readText();
+    if (!text) return;
+    input.textContent = text;
+    input.dispatchEvent(new Event('input', {bubbles: true}));
+    setStatus('text-status', 'Текст вставлено', 'success');
+  } catch {
+    const pasted = document.execCommand('paste');
+    setStatus(
+      'text-status',
+      pasted ? 'Текст вставлено' : 'Браузер не дозволив доступ до буфера',
+      pasted ? 'success' : 'error'
+    );
+  }
 }
 
 async function doStop() {
@@ -2569,34 +2739,28 @@ async function doFileStop() {
   setWorking('file', false);
 }
 
-// ── Models & connection status ─────────────────────────────────────────
-async function loadModels() {
-  const dot      = document.getElementById('conn-dot');
-  const txt      = document.getElementById('conn-text');
-  const modelRow = document.getElementById('model-name');
-  const modelVal = document.getElementById('model-name-val');
+// ── Server status ─────────────────────────────────────────────────────
+async function loadServerStatus() {
+  const dot = document.getElementById('conn-dot');
+  const txt = document.getElementById('conn-text');
   try {
     const r    = await fetch('/models');
     const data = await r.json();
     if (data.ok && data.models.length > 0) {
       dot.className = 'conn-dot ok';
-      txt.textContent = 'Ollama підключена';
-      modelVal.textContent = data.current || '—';
-      modelRow.style.display = '';
+      txt.textContent = 'Сервер працює';
     } else {
       dot.className = 'conn-dot err';
-      txt.textContent = 'Ollama недоступна';
-      modelRow.style.display = 'none';
+      txt.textContent = 'Сервер недоступний';
     }
   } catch (e) {
     dot.className = 'conn-dot err';
-    txt.textContent = "Помилка з'єднання";
-    modelRow.style.display = 'none';
+    txt.textContent = 'Сервер недоступний';
   }
 }
 
 
-setInterval(loadModels, 30000);
+setInterval(loadServerStatus, 30000);
 
 // ── Init ──────────────────────────────────────────────────────────────
 // ── Online presence ───────────────────────────────────────────────────────
@@ -2673,7 +2837,7 @@ function updateCharCounter() {
 document.getElementById('input').addEventListener('input', updateCharCounter);
 
 initLangs();
-loadModels();
+loadServerStatus();
 loadAppConfig();
 document.getElementById('input').addEventListener('keydown', e => {
   if (e.ctrlKey && e.key === 'Enter') doTranslate();

@@ -220,6 +220,46 @@ class AdminPageTests(unittest.TestCase):
         self.assertIn("cfg.max_tokens    ?? 4096", server.ADMIN_HTML)
         self.assertIn("cfg.temperature   ?? 0.1", server.ADMIN_HTML)
 
+    def test_packaged_config_uses_local_primary_model(self):
+        config_path = os.path.join(os.path.dirname(server.__file__), "translator_config.json")
+        with open(config_path, encoding="utf-8") as config_file:
+            config = json.load(config_file)
+
+        self.assertEqual(config["base_url"], "http://127.0.0.1:11434/v1")
+        self.assertEqual(config["model"], "rinex20/translategemma3:12b")
+        self.assertEqual(config["max_tokens"], 4096)
+
+    def test_user_page_uses_only_local_javascript(self):
+        self.assertIn('src="/static/vendor/marked.min.js"', server.USER_HTML)
+        self.assertIn('src="/static/vendor/purify.min.js"', server.USER_HTML)
+        self.assertNotIn("cdn.jsdelivr.net", server.USER_HTML)
+        self.assertNotRegex(server.USER_HTML, r'<script[^>]+src="https?://')
+
+        static_dir = os.path.join(os.path.dirname(server.__file__), "static", "vendor")
+        self.assertTrue(os.path.isfile(os.path.join(static_dir, "marked.min.js")))
+        self.assertTrue(os.path.isfile(os.path.join(static_dir, "purify.min.js")))
+
+    def test_user_page_shows_simple_server_status(self):
+        self.assertIn("Сервер працює", server.USER_HTML)
+        self.assertIn("Сервер недоступний", server.USER_HTML)
+        self.assertNotIn("мовна модель", server.USER_HTML)
+        self.assertNotIn("Ollama підключена", server.USER_HTML)
+        self.assertIn("system-model", server.ADMIN_HTML)
+
+    def test_text_workspace_fits_viewport_and_scrolls_editors(self):
+        self.assertIn("body { height: 100vh", server.USER_HTML)
+        self.assertIn("overflow: hidden; flex: 1 1 auto", server.USER_HTML)
+        self.assertIn("#panel-text.active { overflow: hidden; }", server.USER_HTML)
+        self.assertIn("overflow-y: auto;", server.USER_HTML)
+
+    def test_text_editors_share_height_and_have_clipboard_actions(self):
+        self.assertIn("grid-template-rows: minmax(0, 1fr) auto", server.USER_HTML)
+        self.assertIn('class="actions text-actions"', server.USER_HTML)
+        self.assertIn("async function pasteInput()", server.USER_HTML)
+        self.assertIn("async function copyResult()", server.USER_HTML)
+        self.assertIn('aria-label="Вставити з буфера"', server.USER_HTML)
+        self.assertIn('aria-label="Копіювати переклад"', server.USER_HTML)
+
     def test_valid_config_is_accepted(self):
         config = server.ConfigUpdate(**valid_config())
         self.assertEqual(config.chunk_size, 3000)
