@@ -91,7 +91,7 @@ DEFAULTS = {
 
 HOST = os.environ.get("INTERPRES_HOST", "0.0.0.0")
 PORT = int(os.environ.get("INTERPRES_PORT", "7860"))
-APP_VERSION = "1.22.2-beta.2"
+APP_VERSION = "1.22.2-beta.3"
 
 LANG_NAMES_UK = {
     "Arabic":     "Арабська",
@@ -667,7 +667,7 @@ def _online_sessions_snapshot(now: float | None = None) -> tuple[int, list[dict]
                 max(0, round(now - last_seen)),
             )
         clients = sorted(by_ip.values(), key=lambda item: item["ip"])
-        return len(_sessions), clients
+        return len(clients), clients
 
 
 def _online_session_count(now: float | None = None) -> int:
@@ -3227,7 +3227,7 @@ async function refreshSystemStatus(manual = false) {
     document.getElementById('system-users').textContent = data.online_users;
     const clients = Array.isArray(data.online_clients) ? data.online_clients : [];
     document.getElementById('system-user-ips').textContent = clients.length
-      ? clients.map(client => `${client.ip} (${client.sessions})`).join(' · ')
+      ? clients.map(client => `${client.ip} (${client.sessions} вклад.)`).join(' · ')
       : 'Немає активних підключень';
     const gpuElement = document.getElementById('system-gpu');
     const gpus = data.gpu && Array.isArray(data.gpu.gpus) ? data.gpu.gpus : [];

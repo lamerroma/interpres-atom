@@ -307,7 +307,7 @@ class AdminPageTests(unittest.TestCase):
             })
         try:
             count, clients = server._online_sessions_snapshot(now)
-            self.assertEqual(count, 3)
+            self.assertEqual(count, 2)
             self.assertEqual(clients, [
                 {"ip": "192.0.2.10", "sessions": 2, "last_seen_seconds": 2},
                 {"ip": "198.51.100.5", "sessions": 1, "last_seen_seconds": 1},
@@ -333,8 +333,29 @@ class AdminPageTests(unittest.TestCase):
                 server._online_sessions_snapshot()[1][0]["ip"],
                 "203.0.113.7",
             )
+            second = server.heartbeat({"sid": "second-tab"}, request)
+            self.assertEqual(json.loads(second.body)["online"], 1)
             invalid = server.heartbeat({"sid": []}, request)
             self.assertEqual(invalid.status_code, 400)
+        finally:
+            with server._sessions_lock:
+                server._sessions.clear()
+                server._sessions.update(original)
+
+    def test_multiple_tabs_from_same_ip_count_as_one_user(self):
+        now = time.time()
+        with server._sessions_lock:
+            original = dict(server._sessions)
+            server._sessions.clear()
+            server._sessions.update({
+                "tab-1": (now, "203.0.113.7"),
+                "tab-2": (now, "203.0.113.7"),
+            })
+        try:
+            self.assertEqual(server._online_session_count(now), 1)
+            count, clients = server._online_sessions_snapshot(now)
+            self.assertEqual(count, 1)
+            self.assertEqual(clients[0]["sessions"], 2)
         finally:
             with server._sessions_lock:
                 server._sessions.clear()
