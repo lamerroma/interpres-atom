@@ -1,5 +1,8 @@
 import re
+import json
+import time
 import unittest
+from unittest.mock import Mock, patch
 
 from pydantic import ValidationError
 
@@ -66,6 +69,56 @@ class AdminPageTests(unittest.TestCase):
         ):
             pattern = rf'<input[^>]*id="{element_id}"[^>]*required'
             self.assertRegex(server.ADMIN_HTML, pattern)
+
+    @patch.object(server.req_lib, "get")
+    def test_admin_status_reports_ollama_and_model(self, get):
+        response = Mock(status_code=200)
+        response.json.return_value = {
+            "models": [{"name": server.CFG.get("model", "")}]
+        }
+        get.return_value = response
+
+        payload = json.loads(server.admin_status().body)
+
+        self.assertTrue(payload["ollama_ok"])
+        self.assertTrue(payload["model_available"])
+        self.assertEqual(payload["version"], server.APP_VERSION)
+        self.assertIn("active_jobs", payload)
+        self.assertIn("queued_jobs", payload)
+
+    @patch.object(server.req_lib, "get", side_effect=OSError("offline"))
+    def test_admin_status_reports_offline_ollama(self, _get):
+        payload = json.loads(server.admin_status().body)
+
+        self.assertFalse(payload["ollama_ok"])
+        self.assertFalse(payload["model_available"])
+        self.assertIn("offline", payload["ollama_error"])
+
+    def test_online_count_removes_stale_sessions(self):
+        now = time.time()
+        with server._sessions_lock:
+            original = dict(server._sessions)
+            server._sessions.clear()
+            server._sessions.update({"current": now, "stale": now - 100})
+        try:
+            self.assertEqual(server._online_session_count(now), 1)
+            with server._sessions_lock:
+                self.assertNotIn("stale", server._sessions)
+        finally:
+            with server._sessions_lock:
+                server._sessions.clear()
+                server._sessions.update(original)
+
+    def test_admin_contains_status_filters_and_dirty_state(self):
+        for element_id in (
+            "system-ollama", "system-model", "system-jobs", "system-users",
+            "system-version", "stats-filter-kind", "stats-filter-status",
+            "stats-filter-search", "settings-dirty-badge",
+        ):
+            self.assertIn(f'id="{element_id}"', server.ADMIN_HTML)
+        self.assertIn("function refreshSystemStatus", server.ADMIN_HTML)
+        self.assertIn("function renderStatsRows", server.ADMIN_HTML)
+        self.assertIn("beforeunload", server.ADMIN_HTML)
 
 
 if __name__ == "__main__":

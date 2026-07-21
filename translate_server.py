@@ -53,7 +53,7 @@ if _missing_opt:
 import requests as req_lib
 from fastapi import FastAPI, UploadFile, File, Form, Request
 from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s %(levelname)s %(message)s')
@@ -82,7 +82,7 @@ DEFAULTS = {
 
 HOST = os.environ.get("INTERPRES_HOST", "0.0.0.0")
 PORT = int(os.environ.get("INTERPRES_PORT", "7860"))
-APP_VERSION = "1.22.1-beta.2"
+APP_VERSION = "1.22.1-beta.3"
 
 LANG_NAMES_UK = {
     "Arabic":     "Арабська",
@@ -379,6 +379,7 @@ _results: dict[str, tuple[str, bytes]] = {}
 _preview_cache: dict[str, bytes] = {}   # file_id -> HTML bytes from mammoth
 _sessions: dict[str, float] = {}        # session_id -> last_seen timestamp
 _SESSION_TTL = 45                       # seconds before a session is considered gone
+_sessions_lock = threading.Lock()
 
 _job_queue: _queue_mod.Queue = _queue_mod.Queue()
 _ticket_lock = threading.Lock()
@@ -397,6 +398,16 @@ def _queue_worker():
 
 
 threading.Thread(target=_queue_worker, daemon=True).start()
+
+
+def _online_session_count(now: float | None = None) -> int:
+    now = now or time.time()
+    with _sessions_lock:
+        stale = [sid for sid, last_seen in _sessions.items()
+                 if now - last_seen > _SESSION_TTL]
+        for sid in stale:
+            _sessions.pop(sid, None)
+        return len(_sessions)
 
 
 def extract_text(filename: str, content: bytes) -> str:
@@ -2176,7 +2187,7 @@ ADMIN_HTML = r"""<!DOCTYPE html>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: sans-serif; background: #f5f5f5; padding: 24px; max-width: 1200px; margin: 0 auto; }
-  h1 { margin-bottom: 20px; font-size: 1.4rem; color: #333; }
+  h1 { font-size: 1.4rem; color: #333; }
   .card { background: white; border-radius: 8px; padding: 20px; box-shadow: 0 1px 4px rgba(0,0,0,.1); margin-bottom: 16px; }
   label { display: block; font-size: .85rem; color: #555; margin-bottom: 4px; }
   input[type=text], input[type=number], select, textarea { width: 100%; border: 1px solid #ddd; border-radius: 6px; padding: 8px 10px; font-size: .95rem; font-family: inherit; }
@@ -2206,6 +2217,23 @@ ADMIN_HTML = r"""<!DOCTYPE html>
   .format-tab:hover { background: #e5e7eb; }
   .format-tab.active { background: #2563eb; color: white; border-color: #2563eb; }
   button:disabled { opacity: .6; cursor: wait; }
+  .page-heading { display:flex; align-items:center; justify-content:space-between; gap:16px; margin-bottom:16px; }
+  .page-subtitle { color:#6b7280; font-size:.85rem; margin-top:4px; }
+  .system-grid { display:grid; grid-template-columns:repeat(5, minmax(0, 1fr)); gap:1px; background:#e5e7eb; border:1px solid #e5e7eb; border-radius:7px; overflow:hidden; }
+  .system-metric { min-width:0; background:#fff; padding:12px 14px; }
+  .system-label { color:#6b7280; font-size:.72rem; text-transform:uppercase; }
+  .system-value { color:#111827; font-size:.95rem; font-weight:600; margin-top:5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .system-value.ok { color:#15803d; }
+  .system-value.err { color:#dc2626; }
+  .status-dot { display:inline-block; width:8px; height:8px; border-radius:50%; background:#9ca3af; margin-right:7px; }
+  .status-dot.ok { background:#16a34a; }
+  .status-dot.err { background:#dc2626; }
+  .system-message { min-height:18px; margin-top:9px; color:#6b7280; font-size:.78rem; }
+  .stats-toolbar { display:grid; grid-template-columns:150px 150px minmax(180px, 1fr) auto; gap:8px; align-items:end; margin-bottom:10px; }
+  .stats-toolbar label { margin:0; }
+  .stats-count { color:#6b7280; font-size:.8rem; padding-bottom:9px; white-space:nowrap; }
+  .dirty-badge { display:none; margin-left:8px; padding:2px 7px; border-radius:999px; background:#fef3c7; color:#92400e; font-size:.7rem; font-weight:500; }
+  .dirty-badge.visible { display:inline-block; }
   @media (max-width: 700px) {
     body { padding: 14px; }
     .card { padding: 14px; }
@@ -2214,19 +2242,77 @@ ADMIN_HTML = r"""<!DOCTYPE html>
     .format-tabs { overflow-x: auto; padding-bottom: 4px; }
     .format-tab { flex: 0 0 auto; padding: 6px 14px; }
     #stats-summary { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
+    .page-heading { align-items:flex-start; }
+    .system-grid { grid-template-columns:repeat(2, minmax(0, 1fr)); }
+    .stats-toolbar { grid-template-columns:1fr 1fr; }
+    .stats-toolbar .stats-search { grid-column:1 / -1; }
   }
 </style>
 </head>
 <body>
 <a class="back-link" href="/">&#8592; На головну</a>
-<h1>Interpres-Atom — Адміністрування</h1>
+<div class="page-heading">
+  <div>
+    <h1>Interpres-Atom — Адміністрування</h1>
+    <div class="page-subtitle">Стан сервісу, статистика та налаштування перекладу</div>
+  </div>
+  <button id="btn-refresh-status" onclick="refreshSystemStatus(true)">&#8635; Перевірити з'єднання</button>
+</div>
+
+<!-- System status -->
+<div class="card">
+  <div class="system-grid">
+    <div class="system-metric">
+      <div class="system-label">Ollama</div>
+      <div id="system-ollama" class="system-value"><span class="status-dot"></span>Перевіряю...</div>
+    </div>
+    <div class="system-metric">
+      <div class="system-label">Модель</div>
+      <div id="system-model" class="system-value">—</div>
+    </div>
+    <div class="system-metric">
+      <div class="system-label">Завдання</div>
+      <div id="system-jobs" class="system-value">—</div>
+    </div>
+    <div class="system-metric">
+      <div class="system-label">Користувачі онлайн</div>
+      <div id="system-users" class="system-value">—</div>
+    </div>
+    <div class="system-metric">
+      <div class="system-label">Версія</div>
+      <div id="system-version" class="system-value">v__APP_VERSION__</div>
+    </div>
+  </div>
+  <div id="system-message" class="system-message" role="status" aria-live="polite"></div>
+</div>
 
 <!-- Stats -->
 <div class="card">
-  <details id="stats-details">
+  <details id="stats-details" open>
     <summary>&#128202; Статистика</summary>
     <div style="margin-top:16px;">
       <div id="stats-summary" style="display:grid; grid-template-columns: repeat(7, 1fr); gap:10px; margin-bottom:14px;"></div>
+      <div class="stats-toolbar">
+        <label>Тип
+          <select id="stats-filter-kind" onchange="renderStatsRows()">
+            <option value="">Усі</option>
+            <option value="text">Текст</option>
+            <option value="file">Файл</option>
+          </select>
+        </label>
+        <label>Статус
+          <select id="stats-filter-status" onchange="renderStatsRows()">
+            <option value="">Усі</option>
+            <option value="success">Успішно</option>
+            <option value="error">Помилки</option>
+            <option value="stopped">Зупинено</option>
+          </select>
+        </label>
+        <label class="stats-search">Пошук
+          <input type="text" id="stats-filter-search" placeholder="Файл, IP або мова" oninput="renderStatsRows()">
+        </label>
+        <span id="stats-filter-count" class="stats-count"></span>
+      </div>
       <div style="overflow:auto; max-height:420px; border:1px solid #e2e8f0; border-radius:6px;">
         <table style="width:100%; border-collapse:collapse; font-size:.82rem;">
           <thead>
@@ -2257,7 +2343,7 @@ ADMIN_HTML = r"""<!DOCTYPE html>
 <!-- Settings -->
 <div class="card">
   <details id="settings-details">
-    <summary>&#9881; Налаштування</summary>
+    <summary>&#9881; Налаштування <span id="settings-dirty-badge" class="dirty-badge">Незбережені зміни</span></summary>
 
     <!-- 1. Підключення -->
     <div class="settings-section">
@@ -2379,6 +2465,8 @@ ADMIN_HTML = r"""<!DOCTYPE html>
 
 <script>
 let cfgStatusTimer = null;
+let settingsDirty = false;
+let statsRows = [];
 
 function escapeHtml(value) {
   const chars = {'&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'};
@@ -2420,6 +2508,67 @@ function setConfigStatus(text, type = '', clearAfter = 0) {
   }
 }
 
+function setSettingsDirty(dirty) {
+  settingsDirty = dirty;
+  document.getElementById('settings-dirty-badge').classList.toggle('visible', dirty);
+}
+
+function collectCfg() {
+  return {
+    base_url:      document.getElementById('cfg_base_url').value.trim(),
+    model:         document.getElementById('cfg_model').value.trim(),
+    max_tokens:    parseInt(document.getElementById('cfg_max_tokens').value),
+    llm_timeout:   parseInt(document.getElementById('cfg_llm_timeout').value),
+    chunk_size:    parseInt(document.getElementById('cfg_chunk_size').value),
+    max_pdf_pages: parseInt(document.getElementById('cfg_max_pdf_pages').value),
+    max_chars:     parseInt(document.getElementById('cfg_max_chars').value),
+    temperature:   parseFloat(document.getElementById('cfg_temperature').value),
+    retry:         parseInt(document.getElementById('cfg_retry').value),
+    insert_mode:   document.getElementById('cfg_insert_mode').value,
+    separator:     document.getElementById('cfg_separator').value,
+    custom_prompt: document.getElementById('cfg_custom_prompt').value,
+  };
+}
+
+async function refreshSystemStatus(manual = false) {
+  const button = document.getElementById('btn-refresh-status');
+  const message = document.getElementById('system-message');
+  if (manual) button.disabled = true;
+  message.textContent = manual ? 'Перевіряю підключення...' : '';
+  try {
+    const data = await fetchJson('/admin/status');
+    const ollama = document.getElementById('system-ollama');
+    ollama.className = 'system-value ' + (data.ollama_ok ? 'ok' : 'err');
+    ollama.innerHTML = `<span class="status-dot ${data.ollama_ok ? 'ok' : 'err'}"></span>${data.ollama_ok ? 'Доступна' : 'Недоступна'}`;
+
+    const model = document.getElementById('system-model');
+    model.textContent = data.model || 'Не вибрана';
+    model.title = data.model || '';
+    model.className = 'system-value ' + (data.model_available ? 'ok' : 'err');
+    document.getElementById('system-jobs').textContent = `${data.active_jobs} активних · ${data.queued_jobs} у черзі`;
+    document.getElementById('system-users').textContent = data.online_users;
+    document.getElementById('system-version').textContent = 'v' + data.version;
+
+    if (!data.ollama_ok) {
+      message.textContent = 'Ollama недоступна: ' + (data.ollama_error || 'невідома помилка');
+      message.style.color = '#dc2626';
+    } else if (!data.model_available) {
+      message.textContent = `Ollama відповіла за ${data.ollama_latency_ms} мс, але вибрану модель не знайдено серед ${data.models_count} моделей.`;
+      message.style.color = '#b45309';
+    } else {
+      message.textContent = `З'єднання справне · ${data.ollama_latency_ms} мс · моделей: ${data.models_count}`;
+      message.style.color = '#15803d';
+    }
+  } catch (error) {
+    document.getElementById('system-ollama').className = 'system-value err';
+    document.getElementById('system-ollama').innerHTML = '<span class="status-dot err"></span>Помилка';
+    message.textContent = 'Не вдалося отримати стан сервера: ' + error.message;
+    message.style.color = '#dc2626';
+  } finally {
+    button.disabled = false;
+  }
+}
+
 function toggleSeparator() {
   const mode = document.getElementById('cfg_insert_mode').value;
   document.getElementById('cfg_separator_row').style.display = (mode === 'replace') ? 'none' : '';
@@ -2452,6 +2601,7 @@ function applyCfg(cfg) {
 async function loadSettings() {
   try {
     applyCfg(await fetchJson('/config'));
+    setSettingsDirty(false);
   } catch (error) {
     setConfigStatus('Не вдалося завантажити налаштування: ' + error.message, 'err');
   }
@@ -2466,20 +2616,7 @@ async function saveSettings() {
     return;
   }
 
-  const cfg = {
-    base_url:      document.getElementById('cfg_base_url').value.trim(),
-    model:         document.getElementById('cfg_model').value.trim(),
-    max_tokens:    parseInt(document.getElementById('cfg_max_tokens').value),
-    llm_timeout:   parseInt(document.getElementById('cfg_llm_timeout').value),
-    chunk_size:    parseInt(document.getElementById('cfg_chunk_size').value),
-    max_pdf_pages: parseInt(document.getElementById('cfg_max_pdf_pages').value),
-    max_chars:     parseInt(document.getElementById('cfg_max_chars').value),
-    temperature:   parseFloat(document.getElementById('cfg_temperature').value),
-    retry:         parseInt(document.getElementById('cfg_retry').value),
-    insert_mode:   document.getElementById('cfg_insert_mode').value,
-    separator:     document.getElementById('cfg_separator').value,
-    custom_prompt: document.getElementById('cfg_custom_prompt').value,
-  };
+  const cfg = collectCfg();
   const button = document.getElementById('btn-save-settings');
   button.disabled = true;
   setConfigStatus('Зберігаю...');
@@ -2489,6 +2626,7 @@ async function saveSettings() {
       headers: {'Content-Type':'application/json'},
       body: JSON.stringify(cfg),
     });
+    setSettingsDirty(false);
     setConfigStatus('Збережено', 'ok', 3000);
   } catch (error) {
     setConfigStatus('Помилка: ' + error.message, 'err');
@@ -2502,6 +2640,7 @@ async function resetSettings() {
   button.disabled = true;
   try {
     applyCfg(await fetchJson('/config/defaults'));
+    setSettingsDirty(true);
     setConfigStatus('Стандартні значення завантажено. Натисніть «Зберегти».', 'ok');
   } catch (error) {
     setConfigStatus('Помилка: ' + error.message, 'err');
@@ -2525,26 +2664,46 @@ async function loadStats() {
          <div style="font-size:.7rem; color:#64748b; text-transform:uppercase;">${escapeHtml(k)}</div>
          <div style="font-size:1.2rem; font-weight:600; color:#1e293b; margin-top:2px;">${escapeHtml(v)}</div>
        </div>`).join('');
-    const sc = { success:'#16a34a', error:'#dc2626', stopped:'#f59e0b' };
-    const rows = (d.recent || []).map(r => {
+    statsRows = d.recent || [];
+    renderStatsRows();
+  } catch(e) {
+    document.getElementById('stats-tbody').innerHTML = `<tr><td colspan="10" style="padding:10px; color:#dc2626;">Помилка: ${escapeHtml(e.message || e)}</td></tr>`;
+  }
+}
+
+function renderStatsRows() {
+  const kind = document.getElementById('stats-filter-kind').value;
+  const status = document.getElementById('stats-filter-status').value;
+  const query = document.getElementById('stats-filter-search').value.trim().toLowerCase();
+  const filtered = statsRows.filter(row => {
+    if (kind && row.kind !== kind) return false;
+    if (status && row.status !== status) return false;
+    if (!query) return true;
+    const haystack = [row.filename, row.ip, row.lang_from, row.lang_to, row.error]
+      .map(value => String(value ?? '').toLowerCase()).join(' ');
+    return haystack.includes(query);
+  });
+
+  const statusLabels = {success:'Успішно', error:'Помилка', stopped:'Зупинено'};
+  const kindLabels = {text:'Текст', file:'Файл'};
+  const statusColors = {success:'#16a34a', error:'#dc2626', stopped:'#f59e0b'};
+  const rows = filtered.map(r => {
       const t = (r.timestamp||'').replace('T',' ').slice(5,19);
       return `<tr>
         <td style="padding:5px 8px; border-bottom:1px solid #f1f5f9;">${escapeHtml(t)}</td>
         <td style="padding:5px 8px; border-bottom:1px solid #f1f5f9;">${escapeHtml(r.ip)}</td>
-        <td style="padding:5px 8px; border-bottom:1px solid #f1f5f9;">${escapeHtml(r.kind)}</td>
+        <td style="padding:5px 8px; border-bottom:1px solid #f1f5f9;">${escapeHtml(kindLabels[r.kind] || r.kind)}</td>
         <td style="padding:5px 8px; border-bottom:1px solid #f1f5f9; max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(r.filename)}</td>
         <td style="padding:5px 8px; border-bottom:1px solid #f1f5f9;">${escapeHtml(r.lang_from)}→${escapeHtml(r.lang_to)}</td>
         <td style="padding:5px 8px; border-bottom:1px solid #f1f5f9; text-align:right;">${escapeHtml(r.chars)}</td>
         <td style="padding:5px 8px; border-bottom:1px solid #f1f5f9; text-align:right;">${escapeHtml(r.pages)}</td>
         <td style="padding:5px 8px; border-bottom:1px solid #f1f5f9; text-align:right;">${escapeHtml(r.duration)}</td>
-        <td style="padding:5px 8px; border-bottom:1px solid #f1f5f9; color:${sc[r.status]||'#64748b'}; font-weight:500;">${escapeHtml(r.status)}</td>
+        <td style="padding:5px 8px; border-bottom:1px solid #f1f5f9; color:${statusColors[r.status]||'#64748b'}; font-weight:500;">${escapeHtml(statusLabels[r.status] || r.status)}</td>
         <td style="padding:5px 8px; border-bottom:1px solid #f1f5f9; color:#dc2626; max-width:250px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${escapeHtml(r.error)}">${escapeHtml(r.error)}</td>
       </tr>`;
     }).join('');
-    document.getElementById('stats-tbody').innerHTML = rows || '<tr><td colspan="10" style="padding:20px; text-align:center; color:#94a3b8;">Немає даних</td></tr>';
-  } catch(e) {
-    document.getElementById('stats-tbody').innerHTML = `<tr><td colspan="10" style="padding:10px; color:#dc2626;">Помилка: ${escapeHtml(e.message || e)}</td></tr>`;
-  }
+  document.getElementById('stats-tbody').innerHTML = rows || '<tr><td colspan="10" style="padding:20px; text-align:center; color:#94a3b8;">Немає даних за вибраними фільтрами</td></tr>';
+  document.getElementById('stats-filter-count').textContent = `Показано ${filtered.length} із ${statsRows.length}`;
 }
 
 async function clearStats() {
@@ -2561,7 +2720,22 @@ document.getElementById('stats-details').addEventListener('toggle', e => {
   if (e.target.open) loadStats();
 });
 
+document.querySelectorAll('#settings-details input, #settings-details select, #settings-details textarea')
+  .forEach(element => {
+    element.addEventListener('input', () => setSettingsDirty(true));
+    element.addEventListener('change', () => setSettingsDirty(true));
+  });
+
+window.addEventListener('beforeunload', event => {
+  if (!settingsDirty) return;
+  event.preventDefault();
+  event.returnValue = '';
+});
+
 loadSettings();
+loadStats();
+refreshSystemStatus();
+setInterval(refreshSystemStatus, 15000);
 </script>
 </body>
 </html>""".replace("__APP_VERSION__", APP_VERSION)
@@ -2580,6 +2754,8 @@ class TranslateHtmlRequest(BaseModel):
 
 
 class ConfigUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     base_url: str = Field(min_length=1, max_length=2048)
     model: str = Field(min_length=1, max_length=256)
     max_tokens: int = Field(ge=128, le=32000)
@@ -2593,10 +2769,6 @@ class ConfigUpdate(BaseModel):
     separator: str = Field(max_length=100)
     custom_prompt: str = Field(max_length=10000)
 
-    class Config:
-        extra = "forbid"
-
-
 @app.get("/", response_class=HTMLResponse)
 def index():
     return USER_HTML
@@ -2605,6 +2777,37 @@ def index():
 @app.get("/admin", response_class=HTMLResponse)
 def admin():
     return ADMIN_HTML
+
+
+@app.get("/admin/status")
+def admin_status():
+    current_model = CFG.get("model", "")
+    started = time.perf_counter()
+    ollama_ok = False
+    models = []
+    error = None
+    try:
+        resp = req_lib.get(f"{_ollama_native_host()}/api/tags", timeout=5)
+        if resp.status_code == 200:
+            models = [m.get("name", "") for m in resp.json().get("models", [])]
+            ollama_ok = True
+        else:
+            error = f"HTTP {resp.status_code}"
+    except Exception as exc:
+        error = str(exc)
+
+    return JSONResponse({
+        "version": APP_VERSION,
+        "ollama_ok": ollama_ok,
+        "ollama_latency_ms": round((time.perf_counter() - started) * 1000),
+        "ollama_error": error,
+        "model": current_model,
+        "model_available": current_model in models,
+        "models_count": len(models),
+        "online_users": _online_session_count(),
+        "active_jobs": len(_active),
+        "queued_jobs": _job_queue.qsize(),
+    })
 
 
 @app.get("/admin/stats")
@@ -3066,19 +3269,17 @@ def heartbeat(data: dict):
     if not sid:
         return JSONResponse({"online": 0}, status_code=400)
     now = time.time()
-    _sessions[sid] = now
-    # Cleanup stale sessions on every heartbeat call
-    stale = [k for k, t in _sessions.items() if now - t > _SESSION_TTL]
-    for k in stale:
-        _sessions.pop(k, None)
-    return JSONResponse({"online": len(_sessions)})
+    with _sessions_lock:
+        _sessions[sid] = now
+    return JSONResponse({"online": _online_session_count(now)})
 
 
 @app.post("/heartbeat-leave")
 async def heartbeat_leave(request: Request):
     try:
         data = await request.json()
-        _sessions.pop(data.get("sid", ""), None)
+        with _sessions_lock:
+            _sessions.pop(data.get("sid", ""), None)
     except Exception:
         pass
     return JSONResponse({"ok": True})
