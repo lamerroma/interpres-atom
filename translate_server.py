@@ -13,6 +13,7 @@ import secrets
 import base64
 import time
 import subprocess
+from contextlib import contextmanager
 from urllib.parse import quote
 
 # ── Dependency check ─────────────────────────────────────────────────────────
@@ -84,7 +85,7 @@ DEFAULTS = {
 
 HOST = os.environ.get("INTERPRES_HOST", "0.0.0.0")
 PORT = int(os.environ.get("INTERPRES_PORT", "7860"))
-APP_VERSION = "1.22.1-beta.7"
+APP_VERSION = "1.22.1-beta.8"
 
 LANG_NAMES_UK = {
     "Arabic":     "Арабська",
@@ -197,10 +198,14 @@ STATS_DB = os.path.join(os.path.dirname(__file__), "stats.db")
 _stats_lock = threading.Lock()
 
 
+@contextmanager
 def _stats_conn():
     conn = sqlite3.connect(STATS_DB)
     conn.row_factory = sqlite3.Row
-    return conn
+    try:
+        yield conn
+    finally:
+        conn.close()
 
 
 _STATS_KEEP = 200  # max detailed records to keep
@@ -238,6 +243,23 @@ def init_stats_db():
             )
         """)
         conn.execute("INSERT OR IGNORE INTO stats_totals (id) VALUES (1)")
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS gpu_metrics (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp REAL NOT NULL,
+                gpu_index INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                utilization_percent REAL,
+                memory_used_mib REAL,
+                memory_total_mib REAL,
+                temperature_c REAL,
+                power_w REAL
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_gpu_metrics_timestamp
+            ON gpu_metrics(timestamp)
+        """)
         conn.commit()
 
 
@@ -472,6 +494,75 @@ def _gpu_status() -> dict:
         return {"available": True, "gpus": gpus, "error": None}
     except (OSError, subprocess.SubprocessError, ValueError) as exc:
         return {"available": False, "gpus": [], "error": str(exc)}
+
+
+def _store_gpu_metrics(status: dict, timestamp: float | None = None) -> None:
+    if not status.get("available") or not status.get("gpus"):
+        return
+    timestamp = timestamp or time.time()
+    fields = (
+        "timestamp", "gpu_index", "name", "utilization_percent",
+        "memory_used_mib", "memory_total_mib", "temperature_c", "power_w",
+    )
+    try:
+        with _stats_lock, _stats_conn() as conn:
+            conn.executemany(
+                f"INSERT INTO gpu_metrics ({','.join(fields)}) "
+                f"VALUES ({','.join(['?'] * len(fields))})",
+                [
+                    (
+                        timestamp, gpu["index"], gpu["name"],
+                        gpu["utilization_percent"], gpu["memory_used_mib"],
+                        gpu["memory_total_mib"], gpu["temperature_c"],
+                        gpu["power_w"],
+                    )
+                    for gpu in status["gpus"]
+                ],
+            )
+            conn.execute(
+                "DELETE FROM gpu_metrics WHERE timestamp < ?",
+                (timestamp - 24 * 60 * 60,),
+            )
+            conn.commit()
+    except Exception as exc:
+        log.warning(f"GPU metrics storage failed: {exc}")
+
+
+def get_gpu_history(hours: int = 3) -> list[dict]:
+    hours = max(1, min(int(hours), 6))
+    since = time.time() - hours * 60 * 60
+    with _stats_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT timestamp, gpu_index, name, utilization_percent,
+                   memory_used_mib, memory_total_mib, temperature_c, power_w
+            FROM gpu_metrics
+            WHERE timestamp >= ?
+            ORDER BY timestamp ASC, gpu_index ASC
+            """,
+            (since,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def _gpu_monitor_worker() -> None:
+    while True:
+        _store_gpu_metrics(_gpu_status())
+        time.sleep(30)
+
+
+_gpu_monitor_started = False
+_gpu_monitor_start_lock = threading.Lock()
+
+
+@app.on_event("startup")
+def _start_gpu_monitor() -> None:
+    global _gpu_monitor_started
+    with _gpu_monitor_start_lock:
+        if _gpu_monitor_started:
+            return
+        threading.Thread(target=_gpu_monitor_worker, daemon=True).start()
+        _gpu_monitor_started = True
 
 
 def extract_text(filename: str, content: bytes) -> str:
@@ -2304,6 +2395,15 @@ ADMIN_HTML = r"""<!DOCTYPE html>
   .online-clients { display:flex; gap:12px; align-items:baseline; margin-top:10px; color:#374151; font-size:.8rem; }
   .online-clients-label { flex:0 0 auto; color:#6b7280; font-weight:600; }
   #system-user-ips { min-width:0; overflow-wrap:anywhere; font-family:monospace; }
+  .gpu-chart-heading { display:flex; justify-content:space-between; align-items:end; gap:12px; margin-bottom:12px; }
+  .gpu-chart-title { font-size:1rem; font-weight:600; color:#333; }
+  .gpu-chart-controls { display:flex; gap:8px; align-items:end; }
+  .gpu-chart-controls label { margin:0; min-width:110px; }
+  .gpu-chart-wrap { position:relative; width:100%; height:260px; }
+  #gpu-history-chart { display:block; width:100%; height:260px; }
+  .gpu-chart-legend { display:flex; flex-wrap:wrap; gap:14px; margin-top:10px; color:#4b5563; font-size:.78rem; }
+  .gpu-chart-key::before { content:''; display:inline-block; width:9px; height:9px; margin-right:5px; border-radius:2px; background:var(--key-color); }
+  #gpu-chart-latest { margin-left:auto; color:#6b7280; }
   .stats-toolbar { display:grid; grid-template-columns:150px 150px minmax(180px, 1fr) auto; gap:8px; align-items:end; margin-bottom:10px; }
   .stats-toolbar label { margin:0; }
   .stats-count { color:#6b7280; font-size:.8rem; padding-bottom:9px; white-space:nowrap; }
@@ -2321,6 +2421,11 @@ ADMIN_HTML = r"""<!DOCTYPE html>
     .system-grid { grid-template-columns:repeat(2, minmax(0, 1fr)); }
     .online-clients { display:block; }
     #system-user-ips { margin-top:4px; }
+    .gpu-chart-heading { align-items:flex-start; flex-direction:column; }
+    .gpu-chart-controls { display:block; }
+    .gpu-chart-controls label + label { margin-top:6px; }
+    .gpu-chart-wrap, #gpu-history-chart { height:220px; }
+    #gpu-chart-latest { width:100%; margin-left:0; }
     .stats-toolbar { grid-template-columns:1fr 1fr; }
     .stats-toolbar .stats-search { grid-column:1 / -1; }
   }
@@ -2369,6 +2474,34 @@ ADMIN_HTML = r"""<!DOCTYPE html>
     <span id="system-user-ips">—</span>
   </div>
   <div id="system-message" class="system-message" role="status" aria-live="polite"></div>
+</div>
+
+<!-- GPU history -->
+<div class="card">
+  <div class="gpu-chart-heading">
+    <div class="gpu-chart-title">Історія навантаження GPU</div>
+    <div class="gpu-chart-controls">
+      <label>Відеокарта
+        <select id="gpu-history-device" onchange="drawGpuHistory()"></select>
+      </label>
+      <label>Період
+        <select id="gpu-history-range" onchange="loadGpuHistory()">
+          <option value="1">1 година</option>
+          <option value="3" selected>3 години</option>
+          <option value="6">6 годин</option>
+        </select>
+      </label>
+    </div>
+  </div>
+  <div class="gpu-chart-wrap">
+    <canvas id="gpu-history-chart" aria-label="Графік навантаження GPU"></canvas>
+  </div>
+  <div class="gpu-chart-legend">
+    <span class="gpu-chart-key" style="--key-color:#2563eb">Завантаження, %</span>
+    <span class="gpu-chart-key" style="--key-color:#16a34a">VRAM, %</span>
+    <span class="gpu-chart-key" style="--key-color:#dc2626">Температура, °C</span>
+    <span id="gpu-chart-latest">Очікую дані...</span>
+  </div>
 </div>
 
 <!-- Stats -->
@@ -2552,10 +2685,138 @@ ADMIN_HTML = r"""<!DOCTYPE html>
 let cfgStatusTimer = null;
 let settingsDirty = false;
 let statsRows = [];
+let gpuHistoryPoints = [];
 
 function escapeHtml(value) {
   const chars = {'&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'};
   return String(value ?? '').replace(/[&<>"']/g, ch => chars[ch]);
+}
+
+async function loadGpuHistory() {
+  const hours = document.getElementById('gpu-history-range').value;
+  try {
+    const data = await fetchJson(`/admin/gpu-history?hours=${hours}`);
+    gpuHistoryPoints = Array.isArray(data.points) ? data.points : [];
+    const device = document.getElementById('gpu-history-device');
+    const selected = device.value;
+    const devices = new Map();
+    gpuHistoryPoints.forEach(point => devices.set(String(point.gpu_index), point.name));
+    device.replaceChildren();
+    if (!devices.size) {
+      const option = document.createElement('option');
+      option.value = '';
+      option.textContent = 'Немає даних';
+      device.appendChild(option);
+    } else {
+      devices.forEach((name, index) => {
+        const option = document.createElement('option');
+        option.value = index;
+        option.textContent = `GPU ${index}: ${name}`;
+        device.appendChild(option);
+      });
+      if (devices.has(selected)) device.value = selected;
+    }
+    drawGpuHistory();
+  } catch (error) {
+    gpuHistoryPoints = [];
+    document.getElementById('gpu-chart-latest').textContent = 'Не вдалося завантажити історію';
+    drawGpuHistory();
+  }
+}
+
+function drawGpuHistory() {
+  const canvas = document.getElementById('gpu-history-chart');
+  const width = Math.max(1, canvas.clientWidth);
+  const height = canvas.clientHeight;
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  canvas.width = Math.round(width * dpr);
+  canvas.height = Math.round(height * dpr);
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, width, height);
+
+  const selectedGpu = document.getElementById('gpu-history-device').value;
+  const points = gpuHistoryPoints.filter(point => String(point.gpu_index) === selectedGpu);
+  const latestLabel = document.getElementById('gpu-chart-latest');
+  if (!points.length) {
+    ctx.fillStyle = '#6b7280';
+    ctx.font = '13px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('Дані з’являться після першого збору показників', width / 2, height / 2);
+    latestLabel.textContent = 'Очікую дані...';
+    return;
+  }
+
+  const padding = {left:42, right:14, top:12, bottom:28};
+  const plotWidth = width - padding.left - padding.right;
+  const plotHeight = height - padding.top - padding.bottom;
+  const hours = Number(document.getElementById('gpu-history-range').value);
+  const timeEnd = Date.now() / 1000;
+  const timeStart = timeEnd - hours * 3600;
+  const x = timestamp => padding.left + ((timestamp - timeStart) / (timeEnd - timeStart)) * plotWidth;
+  const y = value => padding.top + plotHeight - (Math.max(0, Math.min(100, value)) / 100) * plotHeight;
+
+  ctx.font = '11px sans-serif';
+  ctx.lineWidth = 1;
+  for (let value = 0; value <= 100; value += 25) {
+    const lineY = y(value);
+    ctx.strokeStyle = '#e5e7eb';
+    ctx.beginPath();
+    ctx.moveTo(padding.left, lineY);
+    ctx.lineTo(width - padding.right, lineY);
+    ctx.stroke();
+    ctx.fillStyle = '#6b7280';
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(String(value), padding.left - 7, lineY);
+  }
+  for (let step = 0; step <= 4; step += 1) {
+    const timestamp = timeStart + (timeEnd - timeStart) * step / 4;
+    const lineX = x(timestamp);
+    ctx.fillStyle = '#6b7280';
+    ctx.textAlign = step === 0 ? 'left' : (step === 4 ? 'right' : 'center');
+    ctx.textBaseline = 'top';
+    ctx.fillText(
+      new Date(timestamp * 1000).toLocaleTimeString('uk-UA', {hour:'2-digit', minute:'2-digit'}),
+      lineX,
+      height - padding.bottom + 8,
+    );
+  }
+
+  function drawLine(valueOf, color) {
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    let drawing = false;
+    points.forEach(point => {
+      const value = valueOf(point);
+      if (!Number.isFinite(value)) {
+        drawing = false;
+        return;
+      }
+      const pointX = x(point.timestamp);
+      const pointY = y(value);
+      if (drawing) ctx.lineTo(pointX, pointY);
+      else ctx.moveTo(pointX, pointY);
+      drawing = true;
+    });
+    ctx.stroke();
+  }
+
+  drawLine(point => point.utilization_percent, '#2563eb');
+  drawLine(point => point.memory_total_mib
+    ? point.memory_used_mib / point.memory_total_mib * 100 : NaN, '#16a34a');
+  drawLine(point => point.temperature_c, '#dc2626');
+
+  const latest = points[points.length - 1];
+  const memoryPercent = latest.memory_total_mib
+    ? latest.memory_used_mib / latest.memory_total_mib * 100 : null;
+  latestLabel.textContent = [
+    latest.utilization_percent == null ? 'GPU n/a' : `GPU ${latest.utilization_percent}%`,
+    memoryPercent == null ? 'VRAM n/a' : `VRAM ${memoryPercent.toFixed(0)}%`,
+    latest.temperature_c == null ? 'n/a' : `${latest.temperature_c}°C`,
+  ].join(' · ');
 }
 
 function apiErrorMessage(data, status) {
@@ -2841,8 +3102,11 @@ window.addEventListener('beforeunload', event => {
 
 loadSettings();
 loadStats();
+loadGpuHistory();
 refreshSystemStatus();
 setInterval(refreshSystemStatus, 15000);
+setInterval(loadGpuHistory, 60000);
+window.addEventListener('resize', drawGpuHistory);
 </script>
 </body>
 </html>""".replace("__APP_VERSION__", APP_VERSION)
@@ -2960,6 +3224,14 @@ def get_limits():
     return JSONResponse({
         "max_chars":     CFG.get("max_chars",     30000),
         "max_pdf_pages": CFG.get("max_pdf_pages", 10),
+    })
+
+
+@app.get("/admin/gpu-history")
+def admin_gpu_history(hours: int = 3):
+    return JSONResponse({
+        "hours": max(1, min(hours, 6)),
+        "points": get_gpu_history(hours),
     })
 
 

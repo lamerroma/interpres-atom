@@ -1,5 +1,7 @@
 import re
 import json
+import os
+import tempfile
 import time
 import unittest
 import subprocess
@@ -187,15 +189,41 @@ class AdminPageTests(unittest.TestCase):
     def test_gpu_status_is_optional(self, _run):
         self.assertFalse(server._gpu_status()["available"])
 
+    def test_gpu_history_is_stored_in_stats_database(self):
+        status = {
+            "available": True,
+            "gpus": [{
+                "index": 0,
+                "name": "Test GPU",
+                "utilization_percent": 42.0,
+                "memory_used_mib": 4096.0,
+                "memory_total_mib": 8192.0,
+                "temperature_c": 55.0,
+                "power_w": 120.0,
+            }],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            database = os.path.join(directory, "stats.db")
+            with patch.object(server, "STATS_DB", database):
+                server.init_stats_db()
+                server._store_gpu_metrics(status)
+                history = server.get_gpu_history(1)
+
+        self.assertEqual(len(history), 1)
+        self.assertEqual(history[0]["utilization_percent"], 42.0)
+        self.assertEqual(history[0]["name"], "Test GPU")
+
     def test_admin_contains_status_filters_and_dirty_state(self):
         for element_id in (
             "system-ollama", "system-model", "system-jobs", "system-users",
             "system-version", "system-gpu", "system-user-ips",
+            "gpu-history-chart", "gpu-history-device", "gpu-history-range",
             "stats-filter-kind", "stats-filter-status",
             "stats-filter-search", "settings-dirty-badge",
         ):
             self.assertIn(f'id="{element_id}"', server.ADMIN_HTML)
         self.assertIn("function refreshSystemStatus", server.ADMIN_HTML)
+        self.assertIn("function drawGpuHistory", server.ADMIN_HTML)
         self.assertIn("function renderStatsRows", server.ADMIN_HTML)
         self.assertIn("beforeunload", server.ADMIN_HTML)
 
