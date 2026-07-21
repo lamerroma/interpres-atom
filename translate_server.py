@@ -91,7 +91,7 @@ DEFAULTS = {
 
 HOST = os.environ.get("INTERPRES_HOST", "0.0.0.0")
 PORT = int(os.environ.get("INTERPRES_PORT", "7860"))
-APP_VERSION = "1.22.2-beta.3"
+APP_VERSION = "1.22.2-beta.4"
 
 LANG_NAMES_UK = {
     "Arabic":     "Арабська",
@@ -412,16 +412,33 @@ class _ActiveJob:
     request_id: str | None = None
     execution_started: bool = False
     last_activity: float = field(default_factory=time.monotonic)
+    backend_response: object | None = field(default=None, repr=False)
     state_lock: threading.Lock = field(default_factory=threading.Lock)
 
     def cancel(self) -> bool:
-        """Cancel and release the queue slot when model execution has not begun."""
+        """Cancel the job and release its slot once the backend stream is closed."""
         with self.state_lock:
             self.stop_event.set()
             if self.done_event is not None and not self.execution_started:
                 self.done_event.set()
                 return True
+            response = self.backend_response
+
+        if response is None:
             return False
+        released = False
+        try:
+            response.close()
+        except Exception:
+            pass
+        finally:
+            with self.state_lock:
+                if self.backend_response is response:
+                    self.backend_response = None
+                if self.done_event is not None:
+                    self.done_event.set()
+                    released = True
+        return released
 
     def begin_execution(self) -> bool:
         with self.state_lock:
@@ -436,6 +453,24 @@ class _ActiveJob:
     def touch(self) -> None:
         with self.state_lock:
             self.last_activity = time.monotonic()
+
+    def attach_backend_response(self, response: object) -> bool:
+        with self.state_lock:
+            if self.stop_event.is_set():
+                should_close = True
+            else:
+                self.backend_response = response
+                self.last_activity = time.monotonic()
+                should_close = False
+        if should_close:
+            response.close()
+            return False
+        return True
+
+    def detach_backend_response(self, response: object) -> None:
+        with self.state_lock:
+            if self.backend_response is response:
+                self.backend_response = None
 
     def stalled_for(self) -> float:
         with self.state_lock:
@@ -482,6 +517,24 @@ def _touch_job(stop_event: threading.Event) -> None:
         job = _jobs_by_event.get(id(stop_event))
     if job is not None:
         job.touch()
+
+
+def _attach_backend_response(stop_event: threading.Event, response: object) -> bool:
+    with _active_lock:
+        job = _jobs_by_event.get(id(stop_event))
+    if job is None:
+        if stop_event.is_set():
+            response.close()
+            return False
+        return True
+    return job.attach_backend_response(response)
+
+
+def _detach_backend_response(stop_event: threading.Event, response: object) -> None:
+    with _active_lock:
+        job = _jobs_by_event.get(id(stop_event))
+    if job is not None:
+        job.detach_backend_response(response)
 
 
 def _active_job_count() -> int:
@@ -1019,6 +1072,8 @@ def _translate_unit_streaming(text: str, lang_from: str, lang_to: str,
                 timeout=CFG["llm_timeout"],
                 stream=True,
             )
+            if not _attach_backend_response(stop_event, resp):
+                return
             if resp.status_code != 200:
                 last_error = f"Ollama повернула HTTP {resp.status_code}"
                 log.warning(f"{last_error} (attempt {attempt + 1}/{attempts})")
@@ -1058,6 +1113,7 @@ def _translate_unit_streaming(text: str, lang_from: str, lang_to: str,
                 raise TranslationError(f"Потік перекладу перервано: {last_error}")
         finally:
             if resp is not None:
+                _detach_backend_response(stop_event, resp)
                 resp.close()
         log.warning(f"_translate_unit_streaming {last_error} (attempt {attempt + 1}/{attempts})")
 

@@ -165,6 +165,30 @@ class AdminPageTests(unittest.TestCase):
         self.assertTrue(job.stop_event.is_set())
         self.assertFalse(job.done_event.is_set())
 
+    def test_cancelled_streaming_job_closes_backend_and_releases_queue(self):
+        job = server._ActiveJob(
+            threading.Event(), threading.Event(), threading.Event()
+        )
+        response = Mock()
+
+        self.assertTrue(job.begin_execution())
+        self.assertTrue(job.attach_backend_response(response))
+        self.assertTrue(job.cancel())
+
+        response.close.assert_called_once_with()
+        self.assertTrue(job.stop_event.is_set())
+        self.assertTrue(job.done_event.is_set())
+
+    def test_backend_response_is_closed_if_stop_won_the_race(self):
+        job = server._ActiveJob(
+            threading.Event(), threading.Event(), threading.Event()
+        )
+        response = Mock()
+        job.stop_event.set()
+
+        self.assertFalse(job.attach_backend_response(response))
+        response.close.assert_called_once_with()
+
     def test_text_stop_reaches_server_before_stream_is_aborted(self):
         self.assertIn("resp.headers.get('X-Request-ID')", server.USER_HTML)
         self.assertIn("if (_textController === controller)", server.USER_HTML)
