@@ -85,7 +85,7 @@ DEFAULTS = {
 
 HOST = os.environ.get("INTERPRES_HOST", "0.0.0.0")
 PORT = int(os.environ.get("INTERPRES_PORT", "7860"))
-APP_VERSION = "1.22.1-beta.8"
+APP_VERSION = "1.22.1-beta.9"
 
 LANG_NAMES_UK = {
     "Arabic":     "Арабська",
@@ -2401,9 +2401,11 @@ ADMIN_HTML = r"""<!DOCTYPE html>
   .gpu-chart-controls label { margin:0; min-width:110px; }
   .gpu-chart-wrap { position:relative; width:100%; height:260px; }
   #gpu-history-chart { display:block; width:100%; height:260px; }
-  .gpu-chart-legend { display:flex; flex-wrap:wrap; gap:14px; margin-top:10px; color:#4b5563; font-size:.78rem; }
-  .gpu-chart-key::before { content:''; display:inline-block; width:9px; height:9px; margin-right:5px; border-radius:2px; background:var(--key-color); }
-  #gpu-chart-latest { margin-left:auto; color:#6b7280; }
+  .gpu-metric-switch { display:flex; gap:2px; width:max-content; max-width:100%; margin-bottom:12px; padding:2px; overflow-x:auto; background:#f3f4f6; border:1px solid #e5e7eb; border-radius:6px; }
+  .gpu-metric-button { flex:0 0 auto; padding:6px 12px; border-radius:4px; background:transparent; color:#4b5563; font-size:.8rem; }
+  .gpu-metric-button:hover { background:#e5e7eb; }
+  .gpu-metric-button.active { background:#2563eb; color:#fff; }
+  .gpu-chart-footer { display:flex; justify-content:space-between; gap:12px; margin-top:10px; color:#6b7280; font-size:.78rem; }
   .stats-toolbar { display:grid; grid-template-columns:150px 150px minmax(180px, 1fr) auto; gap:8px; align-items:end; margin-bottom:10px; }
   .stats-toolbar label { margin:0; }
   .stats-count { color:#6b7280; font-size:.8rem; padding-bottom:9px; white-space:nowrap; }
@@ -2425,7 +2427,8 @@ ADMIN_HTML = r"""<!DOCTYPE html>
     .gpu-chart-controls { display:block; }
     .gpu-chart-controls label + label { margin-top:6px; }
     .gpu-chart-wrap, #gpu-history-chart { height:220px; }
-    #gpu-chart-latest { width:100%; margin-left:0; }
+    .gpu-chart-footer { display:block; }
+    #gpu-chart-latest { display:block; margin-top:4px; }
     .stats-toolbar { grid-template-columns:1fr 1fr; }
     .stats-toolbar .stats-search { grid-column:1 / -1; }
   }
@@ -2493,13 +2496,17 @@ ADMIN_HTML = r"""<!DOCTYPE html>
       </label>
     </div>
   </div>
+  <div class="gpu-metric-switch" role="tablist" aria-label="Показник GPU">
+    <button class="gpu-metric-button active" data-metric="utilization" onclick="setGpuHistoryMetric('utilization', this)" aria-selected="true">GPU</button>
+    <button class="gpu-metric-button" data-metric="memory" onclick="setGpuHistoryMetric('memory', this)" aria-selected="false">VRAM</button>
+    <button class="gpu-metric-button" data-metric="temperature" onclick="setGpuHistoryMetric('temperature', this)" aria-selected="false">Температура</button>
+    <button class="gpu-metric-button" data-metric="power" onclick="setGpuHistoryMetric('power', this)" aria-selected="false">Потужність</button>
+  </div>
   <div class="gpu-chart-wrap">
     <canvas id="gpu-history-chart" aria-label="Графік навантаження GPU"></canvas>
   </div>
-  <div class="gpu-chart-legend">
-    <span class="gpu-chart-key" style="--key-color:#2563eb">Завантаження, %</span>
-    <span class="gpu-chart-key" style="--key-color:#16a34a">VRAM, %</span>
-    <span class="gpu-chart-key" style="--key-color:#dc2626">Температура, °C</span>
+  <div class="gpu-chart-footer">
+    <span id="gpu-chart-axis-label">Завантаження GPU, %</span>
     <span id="gpu-chart-latest">Очікую дані...</span>
   </div>
 </div>
@@ -2686,6 +2693,38 @@ let cfgStatusTimer = null;
 let settingsDirty = false;
 let statsRows = [];
 let gpuHistoryPoints = [];
+let gpuHistoryMetric = 'utilization';
+
+const GPU_HISTORY_METRICS = {
+  utilization: {
+    label: 'Завантаження GPU', unit: '%', color: '#2563eb', max: 100,
+    value: point => point.utilization_percent,
+  },
+  memory: {
+    label: 'Використання VRAM', unit: '%', color: '#16a34a', max: 100,
+    value: point => point.memory_total_mib
+      ? point.memory_used_mib / point.memory_total_mib * 100 : NaN,
+  },
+  temperature: {
+    label: 'Температура', unit: '°C', color: '#dc2626', max: 100,
+    value: point => point.temperature_c,
+  },
+  power: {
+    label: 'Потужність', unit: 'W', color: '#9333ea', max: null,
+    value: point => point.power_w,
+  },
+};
+
+function setGpuHistoryMetric(metric, button) {
+  if (!GPU_HISTORY_METRICS[metric]) return;
+  gpuHistoryMetric = metric;
+  document.querySelectorAll('.gpu-metric-button').forEach(item => {
+    const active = item === button;
+    item.classList.toggle('active', active);
+    item.setAttribute('aria-selected', String(active));
+  });
+  drawGpuHistory();
+}
 
 function escapeHtml(value) {
   const chars = {'&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'};
@@ -2738,6 +2777,9 @@ function drawGpuHistory() {
   const selectedGpu = document.getElementById('gpu-history-device').value;
   const points = gpuHistoryPoints.filter(point => String(point.gpu_index) === selectedGpu);
   const latestLabel = document.getElementById('gpu-chart-latest');
+  const metric = GPU_HISTORY_METRICS[gpuHistoryMetric];
+  document.getElementById('gpu-chart-axis-label').textContent = `${metric.label}, ${metric.unit}`;
+  canvas.setAttribute('aria-label', `${metric.label} за вибраний період`);
   if (!points.length) {
     ctx.fillStyle = '#6b7280';
     ctx.font = '13px sans-serif';
@@ -2753,12 +2795,18 @@ function drawGpuHistory() {
   const hours = Number(document.getElementById('gpu-history-range').value);
   const timeEnd = Date.now() / 1000;
   const timeStart = timeEnd - hours * 3600;
+  const values = points.map(metric.value).filter(Number.isFinite);
+  const yMax = metric.max || Math.max(
+    50,
+    Math.ceil(Math.max(...values, 1) * 1.2 / 50) * 50,
+  );
   const x = timestamp => padding.left + ((timestamp - timeStart) / (timeEnd - timeStart)) * plotWidth;
-  const y = value => padding.top + plotHeight - (Math.max(0, Math.min(100, value)) / 100) * plotHeight;
+  const y = value => padding.top + plotHeight - (Math.max(0, Math.min(yMax, value)) / yMax) * plotHeight;
 
   ctx.font = '11px sans-serif';
   ctx.lineWidth = 1;
-  for (let value = 0; value <= 100; value += 25) {
+  for (let step = 0; step <= 4; step += 1) {
+    const value = yMax * step / 4;
     const lineY = y(value);
     ctx.strokeStyle = '#e5e7eb';
     ctx.beginPath();
@@ -2768,7 +2816,7 @@ function drawGpuHistory() {
     ctx.fillStyle = '#6b7280';
     ctx.textAlign = 'right';
     ctx.textBaseline = 'middle';
-    ctx.fillText(String(value), padding.left - 7, lineY);
+    ctx.fillText(String(Math.round(value)), padding.left - 7, lineY);
   }
   for (let step = 0; step <= 4; step += 1) {
     const timestamp = timeStart + (timeEnd - timeStart) * step / 4;
@@ -2783,14 +2831,14 @@ function drawGpuHistory() {
     );
   }
 
-  function drawLine(valueOf, color) {
-    ctx.strokeStyle = color;
+  function drawLine() {
+    ctx.strokeStyle = metric.color;
     ctx.lineWidth = 2;
     ctx.lineJoin = 'round';
     ctx.beginPath();
     let drawing = false;
     points.forEach(point => {
-      const value = valueOf(point);
+      const value = metric.value(point);
       if (!Number.isFinite(value)) {
         drawing = false;
         return;
@@ -2804,19 +2852,13 @@ function drawGpuHistory() {
     ctx.stroke();
   }
 
-  drawLine(point => point.utilization_percent, '#2563eb');
-  drawLine(point => point.memory_total_mib
-    ? point.memory_used_mib / point.memory_total_mib * 100 : NaN, '#16a34a');
-  drawLine(point => point.temperature_c, '#dc2626');
+  drawLine();
 
   const latest = points[points.length - 1];
-  const memoryPercent = latest.memory_total_mib
-    ? latest.memory_used_mib / latest.memory_total_mib * 100 : null;
-  latestLabel.textContent = [
-    latest.utilization_percent == null ? 'GPU n/a' : `GPU ${latest.utilization_percent}%`,
-    memoryPercent == null ? 'VRAM n/a' : `VRAM ${memoryPercent.toFixed(0)}%`,
-    latest.temperature_c == null ? 'n/a' : `${latest.temperature_c}°C`,
-  ].join(' · ');
+  const latestValue = metric.value(latest);
+  latestLabel.textContent = Number.isFinite(latestValue)
+    ? `Останнє значення: ${latestValue.toFixed(gpuHistoryMetric === 'power' ? 1 : 0)} ${metric.unit}`
+    : 'Останнє значення: n/a';
 }
 
 function apiErrorMessage(data, status) {

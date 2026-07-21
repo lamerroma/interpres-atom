@@ -218,12 +218,16 @@ class AdminPageTests(unittest.TestCase):
             "system-ollama", "system-model", "system-jobs", "system-users",
             "system-version", "system-gpu", "system-user-ips",
             "gpu-history-chart", "gpu-history-device", "gpu-history-range",
+            "gpu-chart-axis-label", "gpu-chart-latest",
             "stats-filter-kind", "stats-filter-status",
             "stats-filter-search", "settings-dirty-badge",
         ):
             self.assertIn(f'id="{element_id}"', server.ADMIN_HTML)
         self.assertIn("function refreshSystemStatus", server.ADMIN_HTML)
         self.assertIn("function drawGpuHistory", server.ADMIN_HTML)
+        self.assertIn("function setGpuHistoryMetric", server.ADMIN_HTML)
+        for metric in ("utilization", "memory", "temperature", "power"):
+            self.assertIn(f'data-metric="{metric}"', server.ADMIN_HTML)
         self.assertIn("function renderStatsRows", server.ADMIN_HTML)
         self.assertIn("beforeunload", server.ADMIN_HTML)
 
