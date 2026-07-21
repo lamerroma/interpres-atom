@@ -29,6 +29,11 @@ def valid_config(**overrides):
 
 
 class AdminPageTests(unittest.TestCase):
+    def test_translation_defaults_use_primary_model_settings(self):
+        self.assertEqual(server.DEFAULTS["model"], "rinex20/translategemma3:12b")
+        self.assertEqual(server.DEFAULTS["temperature"], 0.1)
+        self.assertIn("cfg.temperature   ?? 0.1", server.ADMIN_HTML)
+
     def test_valid_config_is_accepted(self):
         config = server.ConfigUpdate(**valid_config())
         self.assertEqual(config.chunk_size, 3000)

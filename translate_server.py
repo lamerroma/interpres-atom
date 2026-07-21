@@ -69,7 +69,7 @@ DEFAULTS = {
     "max_tokens":      2048,
     "llm_timeout":     180,
     "chunk_size":      3000,
-    "temperature":     0.7,
+    "temperature":     0.1,
     "retry":           2,
     "insert_mode":     "replace",
     "separator":       "\n",
@@ -82,7 +82,7 @@ DEFAULTS = {
 
 HOST = os.environ.get("INTERPRES_HOST", "0.0.0.0")
 PORT = int(os.environ.get("INTERPRES_PORT", "7860"))
-APP_VERSION = "1.22.1-beta.3"
+APP_VERSION = "1.22.1-beta.4"
 
 LANG_NAMES_UK = {
     "Arabic":     "Арабська",
@@ -698,7 +698,7 @@ def _translate_json_segments(batch: dict, lang_to: str,
     prompt = f"{instruction}\n\n{json_input}"
 
     max_retries = _retry_count()
-    temperature = float(CFG.get("temperature", 0.7))
+    temperature = float(CFG.get("temperature", 0.1))
 
     for attempt in range(max_retries):
         if stop_event.is_set():
@@ -2590,7 +2590,7 @@ function applyCfg(cfg) {
   document.getElementById('cfg_chunk_size').value    = cfg.chunk_size    ?? 3000;
   document.getElementById('cfg_max_pdf_pages').value = cfg.max_pdf_pages ?? 10;
   document.getElementById('cfg_max_chars').value     = cfg.max_chars     ?? 30000;
-  document.getElementById('cfg_temperature').value   = cfg.temperature   ?? 0.7;
+  document.getElementById('cfg_temperature').value   = cfg.temperature   ?? 0.1;
   document.getElementById('cfg_retry').value         = cfg.retry         ?? 2;
   document.getElementById('cfg_insert_mode').value   = cfg.insert_mode   ?? 'replace';
   document.getElementById('cfg_separator').value     = cfg.separator     ?? '\n';
